@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rebit GBA Online - WebRTC P2P Netplay (GitHub Pages Edition)</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="peerjs.min.js"></script>
+  <script src="p2p-link.js"></script>
+  <script src="cores/mgba_dual.js"></script>
+</head>
+<body>
+  <header>
+    <div class="logo-area">
+      <div class="logo-badge">P2P WEBRTC</div>
+      <h1>mGBA Online Netplay</h1>
+    </div>
+    <div class="status-bar">
+      <div class="badge" id="romBadge">ROM: Inizializzazione...</div>
+      <div class="badge" id="saveBadge">Salvataggio: Nessuno</div>
+      <div class="badge" id="modeBadge">Modalita: Singolo (P1)</div>
+      <div class="badge active" id="fpsBadge"><span class="indicator"></span> 0 FPS</div>
+      <div class="badge" id="speedBadge">Velocita: 1x (60 FPS)</div>
+    </div>
+  </header>
+
+  <main>
+    <div class="screen-container" id="screenWrapper">
+      <!-- In-Game floating notification banner with dismiss button -->
+      <div id="gameNotification" class="game-notification" style="display: none;">
+        <span id="gameNotificationText"></span>
+        <button id="btnCloseGameNotification" class="notification-close-btn" title="Chiudi avviso">[X]</button>
+      </div>
+
+      <!-- GBA Canvas: 240x160 native, scaled pixel-perfect -->
+      <canvas id="screenCanvas" width="240" height="160" style="width: 720px; height: 480px;"></canvas>
+
+      <!-- Canvas status & pause overlay (Background pause / Desync wait) -->
+      <div class="canvas-overlay" id="canvasOverlay" style="display: none;">
+        <div class="overlay-card" id="overlayCard">
+          <button class="overlay-close-btn" id="btnCloseOverlay" title="Chiudi avviso">[X]</button>
+          <div class="overlay-icon" id="overlayIcon">[PAUSA]</div>
+          <div class="overlay-title" id="overlayTitle">Simulazione in Pausa</div>
+          <div class="overlay-subtitle" id="overlaySubtitle">La scheda e in secondo piano</div>
+          <div class="overlay-hint" id="overlayHint">Clicca qui per riprendere</div>
+        </div>
+      </div>
+
+      <!-- Loading overlay -->
+      <div class="loading-overlay" id="loadingOverlay">
+        <div class="spinner"></div>
+        <div id="loadingText" style="font-weight: 600; font-size: 16px;">Inizializzazione mGBA WASM...</div>
+        <div class="progress-bar-container">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+        <div id="loadingDetail" style="font-size: 12px; color: #a1a1aa;">Caricamento ROM in corso...</div>
+      </div>
+    </div>
+
+    <!-- Controls Panel -->
+    <div class="controls-panel">
+      <button class="primary" id="btnPlayPause">[||] Pausa</button>
+      <button class="highlight" id="btnSpeedToggle">[&gt;&gt;] Velocita: 1x</button>
+      <button id="btnAudioToggle">[Audio] Attivo</button>
+      <button id="btnReset">[&lt;&gt;] Riavvia</button>
+
+      <div style="height: 24px; width: 1px; background: #3f3f46; margin: 0 4px;"></div>
+
+      <!-- ROM Loader -->
+      <input type="file" id="inputRomFile" accept=".gba" style="display: none;">
+      <button id="btnLoadRom">[ROM] Carica .gba</button>
+
+      <!-- Save Management -->
+      <input type="file" id="inputSaveFile" accept=".sav" style="display: none;">
+      <button id="btnImportSave">[+] Carica .sav</button>
+      <button id="btnExportSave">[-] Scarica .sav</button>
+      <button id="btnOpenSavestateModal" style="background: #312e81; border-color: #6366f1;">
+        [#] Savestate di Emergenza
+      </button>
+      <button id="btnOpenKeybindsModal" style="background: #1e293b; border-color: #475569;">
+        [K] Comandi Tastiera
+      </button>
+
+      <div style="height: 24px; width: 1px; background: #3f3f46; margin: 0 4px;"></div>
+
+      <!-- Online Netplay Link Cable Trigger -->
+      <button class="highlight" id="btnOpenNetplayModal" style="background: linear-gradient(135deg, #4f46e5, #7c3aed); border-color: #8b5cf6;">
+        [ONLINE] Cavo Link P2P
+      </button>
+
+      <!-- Mode selector (Local) -->
+      <select class="mode-select" id="modeSelect">
+        <option value="solo">Schermo Singolo (P1)</option>
+        <option value="dual">Dual Split-Screen (P1 + P2)</option>
+      </select>
+
+      <button id="btnToggleScreenView">[O] Vista: Singolo</button>
+
+      <div style="height: 24px; width: 1px; background: #3f3f46; margin: 0 4px;"></div>
+
+      <!-- Debug Toggle: Pause on Background -->
+      <label class="toggle-control" id="lblPauseOnBackground" title="Pausa la simulazione quando la finestra perde il focus (utile per debug)">
+        <input type="checkbox" id="chkPauseOnBackground">
+        <span>[||] Pausa se in background (Debug)</span>
+      </label>
+    </div>
+
+    <!-- Keybindings Guide -->
+    <div class="keybindings-info">
+      <div style="font-weight: 600; color: #f4f4f5; margin-bottom: 4px;">Comandi Tastiera GBA (Layout Rebit):</div>
+      <div class="key-grid">
+        <div class="key-item"><span>D-Pad (Movimento)</span> <span><kbd>&uarr;</kbd> <kbd>&darr;</kbd> <kbd>&larr;</kbd> <kbd>&rarr;</kbd></span></div>
+        <div class="key-item"><span>Pulsante A (Conferma)</span> <span><kbd>Z</kbd> oppure <kbd>J</kbd></span></div>
+        <div class="key-item"><span>Pulsante B (Annulla)</span> <span><kbd>X</kbd> oppure <kbd>K</kbd></span></div>
+        <div class="key-item"><span>Pulsante START</span> <span><kbd>Enter</kbd></span></div>
+        <div class="key-item"><span>Pulsante SELECT</span> <span><kbd>Shift</kbd> / <kbd>Backspace</kbd></span></div>
+        <div class="key-item"><span>Dorsali L / R</span> <span><kbd>A</kbd> / <kbd>S</kbd></span></div>
+        <div class="key-item"><span>Fast-Forward (2x Speed)</span> <span><kbd>Spazio</kbd></span></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Rebit-Style Link Cable Online Modal (WebRTC P2P Edition) -->
+  <div class="modal-backdrop" id="netplayModal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 16px; font-weight: bold; color: #818cf8;">[ONLINE P2P]</span>
+          <h2>GBA Link Cable (Multiplayer WebRTC P2P)</h2>
+        </div>
+        <button class="modal-close" id="btnCloseNetplayModal">[X]</button>
+      </div>
+
+      <div class="modal-tabs">
+        <button class="tab-btn active" id="tabHostBtn">Ospita Stanza (Host)</button>
+        <button class="tab-btn" id="tabJoinBtn">Partecipa a Stanza (Guest)</button>
+      </div>
+
+      <!-- Host Panel -->
+      <div class="modal-body" id="tabHostContent">
+        <p style="font-size: 13px; color: #a1a1aa; margin-bottom: 12px;">
+          Crea una stanza online a 1-click: riceverai un link diretto da inviare al compagno. Appena lo apre nel browser, la connessione si avvia automaticamente!
+        </p>
+        <div class="form-group">
+          <label>Tuo Nome Giocatore:</label>
+          <input type="text" id="hostPlayerName" value="Player 1" style="width: 100%;">
+        </div>
+        <div class="form-group">
+          <label>Velocita Stanza:</label>
+          <select id="hostRoomSpeed" class="mode-select" style="width: 100%;">
+            <option value="1">1x Velocita (60 FPS Normale)</option>
+            <option value="2" selected>2x Velocita (120 FPS Fast-Forward Rebit)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Visualizzazione Schermo:</label>
+          <select id="hostScreenView" class="mode-select" style="width: 100%;">
+            <option value="solo" selected>Solo il mio schermo (240x160)</option>
+            <option value="split">Entrambi gli schermi (Split-Screen 480x160)</option>
+          </select>
+        </div>
+
+        <button class="primary" id="btnStartHosting" style="width: 100%; justify-content: center; padding: 10px; margin-top: 8px;">
+          [+] Crea Stanza Online (1-Click)
+        </button>
+
+        <div id="hostWaitingArea" style="display: none; margin-top: 16px; padding: 14px; background: #18181b; border: 1px solid #6366f1; border-radius: 8px; text-align: center;">
+          <div style="font-size: 11px; color: #a5b4fc; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Codice Stanza</div>
+          <div id="generatedRoomCode" style="font-size: 26px; font-weight: 800; color: #4ade80; letter-spacing: 2px; margin-bottom: 10px;">GBA-0000</div>
+          <div style="display: flex; gap: 8px; justify-content: center; margin-bottom: 12px; flex-wrap: wrap;">
+            <button id="btnCopyRoomLink" style="font-size: 12px; padding: 8px 14px; background: #065f46; border-color: #10b981; font-weight: bold;">[Copia] Link Diretto (Invia al compagno)</button>
+            <button id="btnCopyRoomCode" style="font-size: 12px; padding: 8px 14px;">[Copia] Solo Codice</button>
+          </div>
+          <div class="status-notice" id="hostStatusNotice">In attesa che il compagno apra il link ed entri nella stanza...</div>
+
+          <!-- Fallback manuale -->
+          <details style="margin-top: 14px; font-size: 11px; color: #71717a; text-align: left; cursor: pointer;">
+            <summary>[Opzionale] Token manuale offline (se i WebSocket sono bloccati)</summary>
+            <div style="margin-top: 8px;">
+              <textarea id="hostOfferCode" class="signal-box" readonly rows="2" placeholder="Codice invito manuale..."></textarea>
+              <textarea id="hostAnswerInput" class="signal-box" rows="2" placeholder="Incolla risposta manuale (GBA1...)" style="margin-top: 4px;"></textarea>
+              <button id="btnHostConnect" style="width: 100%; margin-top: 4px; font-size: 11px; padding: 6px;">[-&gt;] Collega Manualmente</button>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <!-- Join Panel -->
+      <div class="modal-body" id="tabJoinContent" style="display: none;">
+        <p style="font-size: 13px; color: #a1a1aa; margin-bottom: 12px;">
+          Inserisci il codice della stanza (o incolla il link dell'Host) per collegarti all'istante via cavo link P2P.
+        </p>
+        <div class="form-group">
+          <label>Tuo Nome Giocatore:</label>
+          <input type="text" id="joinPlayerName" value="Player 2" style="width: 100%;">
+        </div>
+        <div class="form-group">
+          <label>Codice Stanza o Link dell'Host:</label>
+          <input type="text" id="joinRoomCode" placeholder="Es: GBA-4821 oppure incolla il link completo" style="width: 100%; padding: 9px 12px; font-family: monospace; font-size: 14px; background: #18181b; border: 1px solid #3f3f46; border-radius: 6px; color: #f4f4f5;">
+        </div>
+        <div class="form-group">
+          <label>Visualizzazione Schermo:</label>
+          <select id="joinScreenView" class="mode-select" style="width: 100%;">
+            <option value="solo" selected>Solo il mio schermo (240x160)</option>
+            <option value="split">Entrambi gli schermi (Split-Screen 480x160)</option>
+          </select>
+        </div>
+
+        <button class="primary" id="btnJoinExistingRoom" style="width: 100%; justify-content: center; padding: 10px; margin-top: 8px;">
+          [-&gt;] Entra nella Stanza Online
+        </button>
+
+        <div id="joinStatusArea" style="display: none; margin-top: 16px; padding: 14px; background: #18181b; border: 1px solid #6366f1; border-radius: 8px; text-align: center;">
+          <div class="status-notice" id="joinStatusNotice">Connessione all'Host in corso...</div>
+
+          <!-- Fallback manuale -->
+          <details style="margin-top: 14px; font-size: 11px; color: #71717a; text-align: left; cursor: pointer;">
+            <summary>[Opzionale] Risposta manuale offline</summary>
+            <div style="margin-top: 8px;">
+              <textarea id="joinAnswerCode" class="signal-box" readonly rows="2" placeholder="Risposta manuale generata..."></textarea>
+              <button id="btnCopyAnswerCode" style="font-size: 11px; margin-top: 4px; padding: 6px;">[Copia] Risposta Manuale</button>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <!-- Active Netplay Banner (When connected) -->
+      <div id="activeNetplayBanner" style="display: none; margin-top: 16px; padding: 12px; background: #14532d; border: 1px solid #22c55e; border-radius: 8px; text-align: center;">
+        <div style="font-weight: 600; color: #86efac; margin-bottom: 4px;">[CONNESSO] Sessione Cavo Link P2P Attiva</div>
+        <div style="font-size: 12px; color: #dcfce7;" id="activeNetplayDetail">Connesso via WebRTC DataChannel P2P.</div>
+        <button id="btnDisconnectNetplay" style="margin: 8px auto 0; background: #dc2626; border-color: #ef4444; font-size: 12px;">
+          Esci dal Cavo Link
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Emergency Savestate & Save Conversion Modal -->
+  <div class="modal-backdrop" id="savestateModal" style="display: none;">
+    <div class="modal-card" style="max-width: 580px;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 16px; font-weight: bold; color: #a5b4fc;">[#]</span>
+          <h2 id="savestateModalHeaderTitle">Salvataggi di Emergenza &amp; Convertitore .sav</h2>
+        </div>
+        <button class="modal-close" id="btnCloseSavestateModal">[X]</button>
+      </div>
+      <div class="modal-body">
+        <!-- Prominent Recovery Button (Active on Desync / Disconnect) -->
+        <button id="btnEmergencyRecoverAndSave" style="display: none; width: 100%; justify-content: center; padding: 12px; font-weight: bold; background: linear-gradient(135deg, #dc2626, #ea580c); font-size: 14px; margin-bottom: 12px; border-color: #ef4444;">
+          [!] Ripristina Sessione Subito in Singolo
+        </button>
+
+        <!-- Educational Explanation Card -->
+        <div class="info-card">
+          <div style="font-weight: 600; color: #a5b4fc; margin-bottom: 6px;">[INFO] Come funzionano i salvataggi e come usarli:</div>
+          <p style="font-size: 13px; color: #d4d4d8; line-height: 1.5; margin-bottom: 8px;">
+            <strong>Salvataggio Ufficiale (.sav, 128 KB):</strong> E la memoria standard della cartuccia fisica del GBA, generato quando salvi dal menu interno del gioco (<em>START &rarr; SALVA</em>). E l'unico formato compatibile con mGBA desktop e cartucce fisiche.
+          </p>
+          <p style="font-size: 13px; color: #d4d4d8; line-height: 1.5;">
+            <strong>Savestate di Emergenza (RAM Snapshot, ~390 KB):</strong> E una fotografia istantanea dell'hardware mGBA (registri CPU, RAM video, audio). Viene salvato automaticamente in RAM ogni 2 minuti per recuperare la sessione in caso di crash o caduta di rete, permettendoti di continuare in singolo e salvare dal menu del gioco.
+          </p>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 14px;">
+          <div style="font-weight: 600; font-size: 13px; color: #f4f4f5;">Azioni Rapide:</div>
+          
+          <button class="primary" id="btnCreateEmergencySavestate" style="width: 100%; justify-content: center; padding: 10px;">
+            [Snap] Cattura Savestate di Emergenza Ora
+          </button>
+
+          <button id="btnRestoreEmergencySavestate" style="width: 100%; justify-content: center; padding: 10px; background: #7c2d12; border-color: #f97316;">
+            [&lt;&lt;] Ripristina da Ultimo Savestate di Emergenza
+          </button>
+
+          <button id="btnConvertSavestateToSav" style="width: 100%; justify-content: center; padding: 10px; background: #065f46; border-color: #10b981;">
+            [&lt;&gt;] Converti Savestate in .sav Standard (128 KB)
+          </button>
+
+          <input type="file" id="inputSavestateFile" accept=".state,.raw" style="display: none;">
+          <div style="display: flex; gap: 8px; margin-top: 4px;">
+            <button id="btnImportSavestateFile" style="flex: 1; justify-content: center; font-size: 12px; padding: 6px;">[+] Carica Snapshot .state</button>
+            <button id="btnExportSavestateFile" style="flex: 1; justify-content: center; font-size: 12px; padding: 6px;">[-] Scarica Snapshot .state (~390KB)</button>
+          </div>
+        </div>
+
+        <div class="status-notice" id="savestateStatusNotice" style="margin-top: 12px; font-size: 12px; text-align: center;">
+          Ultimo savestate: Nessuno ancora registrato.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Keybindings & Controls Modal -->
+  <div class="modal-backdrop" id="keybindsModal" style="display: none;">
+    <div class="modal-card" style="max-width: 580px;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 16px; font-weight: bold; color: #94a3b8;">[K]</span>
+          <h2>Configurazione Comandi Tastiera</h2>
+        </div>
+        <button class="modal-close" id="btnCloseKeybindsModal">[X]</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 13px; color: #a1a1aa; margin-bottom: 12px;">
+          Personalizza la mappatura dei tasti della tastiera. Clicca sul comando e premi il tasto desiderato.
+        </p>
+
+        <!-- Presets -->
+        <div style="display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap;">
+          <button id="presetRebit" style="font-size: 12px; padding: 4px 8px;">Frecce + Z/X</button>
+          <button id="presetWasd" style="font-size: 12px; padding: 4px 8px;">WASD + J/K</button>
+          <button id="presetNumpad" style="font-size: 12px; padding: 4px 8px;">Tastierino (8456)</button>
+          <button id="presetReset" style="font-size: 12px; padding: 4px 8px; background: #3f3f46;">Default</button>
+        </div>
+
+        <!-- Keybind list container -->
+        <div id="keybindContainer" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px;">
+          <!-- Dynamically populated rows -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
