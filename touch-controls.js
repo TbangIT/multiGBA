@@ -1,22 +1,21 @@
 /**
- * touch-controls.js - Sistema di Controlli Touch Personalizzabili per GBA
+ * touch-controls.js - Sistema di Controlli Touch Personalizzabili per GBA (Edizione Tasti Singoli & Croce D-Pad 3D)
  * 
  * Supporta:
- * - D-Pad fluido con rilevamento angolare e diagonali (Up, Down, Left, Right + Diagonali)
- * - Tasti A, B, combinazione rapida A+B
- * - Dorsali L e R
- * - SELECT, START e toggle rapido Velocita 2x
- * - Multitouch a bassa latenza senza ritardi o gesture parassite
- * - Feedback aptico (vibrazione) su dispositivi supportati
- * - Modalita "Edit Layout": sposta a piacimento ogni gruppo di controlli e regolane dimensione e trasparenza
+ * - Croce Direzionale GBA monolitica unificata con piatto incassato, rilevamento angolare e 3D rocker tilt
+ * - Tasti individuali A, B, A+B, L, R, SELECT, START, 2X TURBO completamente separati e liberamente riposizionabili
+ * - Modalità Edit Layout: trascina qualsiasi tasto singolarmente sullo schermo
+ * - Ridimensionamento individuale per tasto selezionato o globale
+ * - Trasparenza regolabile in tempo reale
  * - Salvataggio persistente in localStorage
- * - Rilevamento automatico smartphone/tablet + interruttore manuale On/Off
+ * - Auto-rilevamento smartphone/tablet + interruttore manuale ON/OFF
  */
 
 (function () {
   "use strict";
 
-  const STORAGE_KEY_LAYOUT = "gba_touch_layout_v2";
+  const STORAGE_KEY_LAYOUT = "gba_touch_layout_v3";
+  const STORAGE_KEY_LAYOUT_V2 = "gba_touch_layout_v2"; // compatibilità
   const STORAGE_KEY_ENABLED = "gba_touch_enabled";
 
   // Mappatura bitmask GBA
@@ -33,20 +32,39 @@
     L: 1 << 9,
   };
 
-  // Stato dei tasti premuti via touch
+  // Nomi leggibili per i badge della barra di modifica
+  const WIDGET_NAMES = {
+    dpad: "D-PAD (Croce)",
+    btnL: "Tasto Dorsale [L]",
+    btnR: "Tasto Dorsale [R]",
+    btnB: "Tasto Azione [B]",
+    btnA: "Tasto Azione [A]",
+    btnAB: "Combinato [A+B]",
+    btnSelect: "Menu [SELECT]",
+    btnStart: "Menu [START]",
+    btnSpeed: "Turbo [2X]"
+  };
+
+  // Stato interno
   let touchMask = 0;
   let isEditing = false;
+  let selectedWidgetId = null;
   let activeDpadTouchId = null;
 
-  // Layout predefinito
+  // Layout predefinito con posizioni ergonomiche per singoli tasti
   const DEFAULT_LAYOUT = {
     scale: 1.0,
-    opacity: 0.75,
-    clusters: {
-      dpad: { bottom: "30px", left: "20px", top: "auto", right: "auto" },
-      actions: { bottom: "30px", right: "20px", top: "auto", left: "auto" },
-      shoulders: { top: "60px", left: "16px", right: "16px", bottom: "auto" },
-      menu: { bottom: "20px", left: "50%", transformX: "-50%", top: "auto", right: "auto" }
+    opacity: 0.8,
+    widgets: {
+      dpad:      { bottom: "25px", left: "25px",  scale: 1.0 },
+      btnL:      { top: "25px",    left: "20px",  scale: 1.0 },
+      btnR:      { top: "25px",    right: "20px", scale: 1.0 },
+      btnB:      { bottom: "35px", right: "95px", scale: 1.0 },
+      btnA:      { bottom: "85px", right: "25px", scale: 1.0 },
+      btnAB:     { bottom: "25px", right: "25px", scale: 1.0 },
+      btnSelect: { bottom: "22px", left: "calc(50% - 95px)", scale: 1.0 },
+      btnStart:  { bottom: "22px", left: "calc(50% - 25px)", scale: 1.0 },
+      btnSpeed:  { bottom: "22px", left: "calc(50% + 45px)", scale: 1.0 }
     }
   };
 
@@ -54,11 +72,19 @@
 
   function loadSavedLayout() {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_LAYOUT);
+      let saved = localStorage.getItem(STORAGE_KEY_LAYOUT);
+      if (!saved) {
+        // Controlla versione precedente
+        saved = localStorage.getItem(STORAGE_KEY_LAYOUT_V2);
+      }
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed && parsed.clusters) {
-          currentLayout = Object.assign({}, DEFAULT_LAYOUT, parsed);
+        if (parsed && typeof parsed === "object") {
+          currentLayout.scale = parsed.scale || DEFAULT_LAYOUT.scale;
+          currentLayout.opacity = parsed.opacity || DEFAULT_LAYOUT.opacity;
+          if (parsed.widgets) {
+            currentLayout.widgets = Object.assign({}, DEFAULT_LAYOUT.widgets, parsed.widgets);
+          }
         }
       }
     } catch (e) {
@@ -68,7 +94,9 @@
 
   function saveCurrentLayout() {
     try {
-      localStorage.setItem(STORAGE_KEY_LAYOUT, JSON.stringify(currentLayout));
+      const data = JSON.stringify(currentLayout);
+      localStorage.setItem(STORAGE_KEY_LAYOUT, data);
+      localStorage.setItem(STORAGE_KEY_LAYOUT_V2, data); // compatibilità
     } catch (e) {
       console.warn("[Touch] Errore salvataggio layout:", e);
     }
@@ -91,43 +119,87 @@
     }
   }
 
-  // Inizializzazione posizioni e stili CSS variabili
+  // Applica le posizioni e scale di ogni singolo widget al DOM
   function applyLayoutToDom() {
     const overlay = document.getElementById("touchControlsOverlay");
     if (!overlay) return;
 
     overlay.style.setProperty("--touch-scale", currentLayout.scale || 1.0);
-    overlay.style.setProperty("--touch-opacity", currentLayout.opacity || 0.75);
+    overlay.style.setProperty("--touch-opacity", currentLayout.opacity || 0.8);
 
     const sizeSlider = document.getElementById("touchSizeSlider");
     const sizeLabel = document.getElementById("touchSizeLabel");
-    if (sizeSlider) sizeSlider.value = currentLayout.scale || 1.0;
-    if (sizeLabel) sizeLabel.innerText = Math.round((currentLayout.scale || 1.0) * 100) + "%";
-
     const opacitySlider = document.getElementById("touchOpacitySlider");
     const opacityLabel = document.getElementById("touchOpacityLabel");
-    if (opacitySlider) opacitySlider.value = currentLayout.opacity || 0.75;
-    if (opacityLabel) opacityLabel.innerText = Math.round((currentLayout.opacity || 0.75) * 100) + "%";
 
-    const clusters = currentLayout.clusters || {};
-    for (const [id, pos] of Object.entries(clusters)) {
-      const el = document.getElementById("cluster" + id.charAt(0).toUpperCase() + id.slice(1));
+    if (opacitySlider) opacitySlider.value = currentLayout.opacity || 0.8;
+    if (opacityLabel) opacityLabel.innerText = Math.round((currentLayout.opacity || 0.8) * 100) + "%";
+
+    updateToolbarSelection();
+
+    const widgets = currentLayout.widgets || {};
+    for (const [id, pos] of Object.entries(widgets)) {
+      const el = document.querySelector(`.touch-widget[data-touch-id="${id}"]`);
       if (!el) continue;
+
       el.style.top = pos.top || "auto";
       el.style.bottom = pos.bottom || "auto";
       el.style.left = pos.left || "auto";
       el.style.right = pos.right || "auto";
-      if (pos.transformX) {
-        el.style.transform = `translateX(${pos.transformX})`;
+
+      if (pos.scale) {
+        el.style.setProperty("--widget-scale", pos.scale);
       } else {
-        el.style.transform = "none";
+        el.style.removeProperty("--widget-scale");
       }
     }
   }
 
-  // Gestione D-Pad con scorrimento continuo e diagonali
+  function updateToolbarSelection() {
+    const badge = document.getElementById("touchSelectedBadge");
+    const sizeSlider = document.getElementById("touchSizeSlider");
+    const sizeLabel = document.getElementById("touchSizeLabel");
+
+    if (selectedWidgetId && currentLayout.widgets[selectedWidgetId]) {
+      const wName = WIDGET_NAMES[selectedWidgetId] || selectedWidgetId;
+      if (badge) badge.innerText = "Modifica: " + wName;
+      const wScale = currentLayout.widgets[selectedWidgetId].scale || 1.0;
+      if (sizeSlider) sizeSlider.value = wScale;
+      if (sizeLabel) sizeLabel.innerText = Math.round(wScale * 100) + "%";
+    } else {
+      if (badge) badge.innerText = "Tutti i Tasti (Globale)";
+      const gScale = currentLayout.scale || 1.0;
+      if (sizeSlider) sizeSlider.value = gScale;
+      if (sizeLabel) sizeLabel.innerText = Math.round(gScale * 100) + "%";
+    }
+  }
+
+  function selectWidget(id) {
+    selectedWidgetId = id;
+    document.querySelectorAll(".touch-widget").forEach((w) => {
+      if (w.getAttribute("data-touch-id") === id) {
+        w.classList.add("selected-widget");
+      } else {
+        w.classList.remove("selected-widget");
+      }
+    });
+    updateToolbarSelection();
+  }
+
+  function unselectAllWidgets() {
+    selectedWidgetId = null;
+    document.querySelectorAll(".touch-widget").forEach((w) => {
+      w.classList.remove("selected-widget");
+    });
+    updateToolbarSelection();
+  }
+
+  // ========================================================
+  // D-PAD: Croce Direzionale Unificata con Rocker Tilt 3D
+  // ========================================================
   function setupDpad() {
     const dpadBase = document.getElementById("touchDpadBase");
+    const dpadCross = document.getElementById("touchDpadCross");
     if (!dpadBase) return;
 
     const btnUp = document.getElementById("btnTouchUp");
@@ -143,16 +215,33 @@
       const dy = clientY - cy;
       const dist = Math.sqrt(dx * dx + dy * dy);
 
-      // Deadzone al centro: 12px
-      const deadzone = 12 * (currentLayout.scale || 1.0);
+      const widgetScale = (currentLayout.widgets.dpad && currentLayout.widgets.dpad.scale) || 1.0;
+      const effectiveScale = (currentLayout.scale || 1.0) * widgetScale;
+      const deadzone = 14 * effectiveScale;
+
       let up = false, down = false, left = false, right = false;
 
       if (dist > deadzone) {
-        const threshold = 14 * (currentLayout.scale || 1.0);
-        if (dy < -threshold) up = true;
-        if (dy > threshold) down = true;
-        if (dx < -threshold) left = true;
-        if (dx > threshold) right = true;
+        // Angolo in gradi (-180 a +180)
+        const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+
+        if (angle >= -157.5 && angle < -112.5) {
+          up = true; left = true;
+        } else if (angle >= -112.5 && angle < -67.5) {
+          up = true;
+        } else if (angle >= -67.5 && angle < -22.5) {
+          up = true; right = true;
+        } else if (angle >= -22.5 && angle < 22.5) {
+          right = true;
+        } else if (angle >= 22.5 && angle < 67.5) {
+          down = true; right = true;
+        } else if (angle >= 67.5 && angle < 112.5) {
+          down = true;
+        } else if (angle >= 112.5 && angle < 157.5) {
+          down = true; left = true;
+        } else {
+          left = true;
+        }
       }
 
       applyButtonState(GBA.UP, up);
@@ -164,6 +253,22 @@
       if (btnDown) btnDown.classList.toggle("active", down);
       if (btnLeft) btnLeft.classList.toggle("active", left);
       if (btnRight) btnRight.classList.toggle("active", right);
+
+      // Feedback 3D Tilt del bilanciere
+      if (dpadCross) {
+        dpadCross.classList.remove(
+          "tilt-up", "tilt-down", "tilt-left", "tilt-right",
+          "tilt-up-left", "tilt-up-right", "tilt-down-left", "tilt-down-right"
+        );
+        if (up && right) dpadCross.classList.add("tilt-up-right");
+        else if (up && left) dpadCross.classList.add("tilt-up-left");
+        else if (down && right) dpadCross.classList.add("tilt-down-right");
+        else if (down && left) dpadCross.classList.add("tilt-down-left");
+        else if (up) dpadCross.classList.add("tilt-up");
+        else if (down) dpadCross.classList.add("tilt-down");
+        else if (left) dpadCross.classList.add("tilt-left");
+        else if (right) dpadCross.classList.add("tilt-right");
+      }
     }
 
     function clearDpad() {
@@ -176,8 +281,15 @@
       if (btnDown) btnDown.classList.remove("active");
       if (btnLeft) btnLeft.classList.remove("active");
       if (btnRight) btnRight.classList.remove("active");
+      if (dpadCross) {
+        dpadCross.classList.remove(
+          "tilt-up", "tilt-down", "tilt-left", "tilt-right",
+          "tilt-up-left", "tilt-up-right", "tilt-down-left", "tilt-down-right"
+        );
+      }
     }
 
+    // Touch
     dpadBase.addEventListener("touchstart", (e) => {
       if (isEditing) return;
       e.preventDefault();
@@ -213,7 +325,7 @@
     dpadBase.addEventListener("touchend", handleDpadEnd, { passive: false });
     dpadBase.addEventListener("touchcancel", handleDpadEnd, { passive: false });
 
-    // Supporto per test con mouse sul D-Pad
+    // Mouse support per desktop/test
     let isMouseDown = false;
     dpadBase.addEventListener("mousedown", (e) => {
       if (isEditing) return;
@@ -232,7 +344,9 @@
     });
   }
 
-  // Gestione pulsanti singoli e combinati (A, B, A+B, L, R, Start, Select, Speed)
+  // ========================================================
+  // TASTI SINGOLI AZIONE (A, B, A+B, L, R, Start, Select, 2X)
+  // ========================================================
   function setupActionButtons() {
     const bindBtn = (id, mask, isCombo = false) => {
       const btn = document.getElementById(id);
@@ -279,7 +393,7 @@
     bindBtn("btnTouchStart", GBA.START);
     bindBtn("btnTouchSelect", GBA.SELECT);
 
-    // Tasto rapido Velocita 2x
+    // Tasto rapido Turbo 2x
     const btnSpeed = document.getElementById("btnTouchSpeed");
     if (btnSpeed) {
       btnSpeed.addEventListener("click", (e) => {
@@ -306,15 +420,16 @@
     }
   }
 
-  // Modalita "Edit Layout": trascinamento posizioni e ridimensionamento
+  // ========================================================
+  // EDIT LAYOUT: TRASCINAMENTO E RIDIMENSIONAMENTO SINGOLI TASTI
+  // ========================================================
   function setupDragAndDrop() {
-    const clusterIds = ["clusterDpad", "clusterActions", "clusterShoulders", "clusterMenu"];
+    const widgets = document.querySelectorAll(".touch-widget");
 
-    clusterIds.forEach((clusterId) => {
-      const el = document.getElementById(clusterId);
-      if (!el) return;
+    widgets.forEach((widget) => {
+      const widgetId = widget.getAttribute("data-touch-id");
+      if (!widgetId) return;
 
-      const clusterKey = el.getAttribute("data-cluster");
       let startX = 0, startY = 0;
       let initialLeft = 0, initialTop = 0;
       let dragging = false;
@@ -322,17 +437,17 @@
       const onStart = (clientX, clientY) => {
         if (!isEditing) return;
         dragging = true;
+        selectWidget(widgetId);
         startX = clientX;
         startY = clientY;
-        const rect = el.getBoundingClientRect();
+        const rect = widget.getBoundingClientRect();
         initialLeft = rect.left;
         initialTop = rect.top;
-        el.style.transform = "none";
-        el.style.bottom = "auto";
-        el.style.right = "auto";
-        el.style.left = initialLeft + "px";
-        el.style.top = initialTop + "px";
-        el.classList.add("dragging");
+        widget.style.bottom = "auto";
+        widget.style.right = "auto";
+        widget.style.left = initialLeft + "px";
+        widget.style.top = initialTop + "px";
+        widget.classList.add("dragging");
       };
 
       const onMove = (clientX, clientY) => {
@@ -343,35 +458,35 @@
         let newLeft = initialLeft + dx;
         let newTop = initialTop + dy;
 
-        // Limiti schermo
-        const rect = el.getBoundingClientRect();
+        const rect = widget.getBoundingClientRect();
         const maxLeft = window.innerWidth - rect.width;
         const maxTop = window.innerHeight - rect.height;
 
         newLeft = Math.max(0, Math.min(newLeft, maxLeft));
         newTop = Math.max(0, Math.min(newTop, maxTop));
 
-        el.style.left = newLeft + "px";
-        el.style.top = newTop + "px";
+        widget.style.left = newLeft + "px";
+        widget.style.top = newTop + "px";
       };
 
       const onEnd = () => {
         if (!dragging) return;
         dragging = false;
-        el.classList.remove("dragging");
-        // Salva le coordinate del cluster
-        currentLayout.clusters[clusterKey] = {
-          left: el.style.left,
-          top: el.style.top,
-          bottom: "auto",
-          right: "auto",
-          transformX: null
-        };
+        widget.classList.remove("dragging");
+
+        if (!currentLayout.widgets[widgetId]) {
+          currentLayout.widgets[widgetId] = {};
+        }
+        currentLayout.widgets[widgetId].left = widget.style.left;
+        currentLayout.widgets[widgetId].top = widget.style.top;
+        currentLayout.widgets[widgetId].bottom = "auto";
+        currentLayout.widgets[widgetId].right = "auto";
+
         saveCurrentLayout();
       };
 
       // Mouse
-      el.addEventListener("mousedown", (e) => {
+      widget.addEventListener("mousedown", (e) => {
         if (!isEditing) return;
         e.preventDefault();
         e.stopPropagation();
@@ -388,7 +503,7 @@
       });
 
       // Touch
-      el.addEventListener("touchstart", (e) => {
+      widget.addEventListener("touchstart", (e) => {
         if (!isEditing) return;
         e.preventDefault();
         e.stopPropagation();
@@ -396,7 +511,7 @@
         onStart(t.clientX, t.clientY);
       }, { passive: false });
 
-      el.addEventListener("touchmove", (e) => {
+      widget.addEventListener("touchmove", (e) => {
         if (!isEditing || !dragging) return;
         e.preventDefault();
         e.stopPropagation();
@@ -404,30 +519,50 @@
         onMove(t.clientX, t.clientY);
       }, { passive: false });
 
-      el.addEventListener("touchend", (e) => {
+      widget.addEventListener("touchend", (e) => {
         if (!isEditing) return;
         onEnd();
       });
-      el.addEventListener("touchcancel", (e) => {
+      widget.addEventListener("touchcancel", (e) => {
         if (!isEditing) return;
         onEnd();
       });
     });
 
-    // Toolbar controlli dimensione / opacita
+    // Clic sullo sfondo per deselezionare il tasto singolo e tornare a scala globale
+    const overlay = document.getElementById("touchControlsOverlay");
+    if (overlay) {
+      overlay.addEventListener("click", (e) => {
+        if (!isEditing) return;
+        if (e.target === overlay) {
+          unselectAllWidgets();
+        }
+      });
+    }
+
+    // Toolbar: Slider Dimensione (individuale o globale)
     const sizeSlider = document.getElementById("touchSizeSlider");
     const sizeLabel = document.getElementById("touchSizeLabel");
     if (sizeSlider) {
       sizeSlider.addEventListener("input", (e) => {
         const val = parseFloat(e.target.value);
-        currentLayout.scale = val;
         if (sizeLabel) sizeLabel.innerText = Math.round(val * 100) + "%";
-        const overlay = document.getElementById("touchControlsOverlay");
-        if (overlay) overlay.style.setProperty("--touch-scale", val);
+
+        if (selectedWidgetId && currentLayout.widgets[selectedWidgetId]) {
+          // Modifica dimensione solo per il tasto selezionato
+          currentLayout.widgets[selectedWidgetId].scale = val;
+          const el = document.querySelector(`.touch-widget[data-touch-id="${selectedWidgetId}"]`);
+          if (el) el.style.setProperty("--widget-scale", val);
+        } else {
+          // Modifica dimensione globale
+          currentLayout.scale = val;
+          if (overlay) overlay.style.setProperty("--touch-scale", val);
+        }
         saveCurrentLayout();
       });
     }
 
+    // Toolbar: Slider Trasparenza
     const opacitySlider = document.getElementById("touchOpacitySlider");
     const opacityLabel = document.getElementById("touchOpacityLabel");
     if (opacitySlider) {
@@ -435,13 +570,12 @@
         const val = parseFloat(e.target.value);
         currentLayout.opacity = val;
         if (opacityLabel) opacityLabel.innerText = Math.round(val * 100) + "%";
-        const overlay = document.getElementById("touchControlsOverlay");
         if (overlay) overlay.style.setProperty("--touch-opacity", val);
         saveCurrentLayout();
       });
     }
 
-    // Reset layout
+    // Toolbar: Reset Layout Default
     const btnReset = document.getElementById("btnResetTouchLayout");
     if (btnReset) {
       btnReset.addEventListener("click", () => {
@@ -451,81 +585,87 @@
       });
     }
 
-    // Salva e chiudi edit mode
+    // Toolbar: Salva e Chiudi
     const btnClose = document.getElementById("btnCloseTouchEdit");
     if (btnClose) {
       btnClose.addEventListener("click", () => {
-        toggleEditMode(false);
+        isEditing = false;
+        unselectAllWidgets();
+        if (overlay) overlay.classList.remove("editing-mode");
+        const toolbar = document.getElementById("touchEditToolbar");
+        if (toolbar) toolbar.style.display = "none";
+        saveCurrentLayout();
       });
     }
   }
 
-  function toggleEditMode(enable) {
-    isEditing = enable !== undefined ? enable : !isEditing;
+  // ========================================================
+  // INIZIALIZZAZIONE & ATTIVAZIONE AUTOMATICA SMART
+  // ========================================================
+  function init() {
+    loadSavedLayout();
+    applyLayoutToDom();
+
+    setupDpad();
+    setupActionButtons();
+    setupDragAndDrop();
+
     const overlay = document.getElementById("touchControlsOverlay");
+    const chkTouch = document.getElementById("chkTouchControls");
+    const btnEdit = document.getElementById("btnEditTouchLayout");
     const toolbar = document.getElementById("touchEditToolbar");
-    const btnEdit = document.getElementById("btnEditTouchLayout");
 
-    if (overlay) overlay.classList.toggle("editing-mode", isEditing);
-    if (toolbar) toolbar.style.display = isEditing ? "flex" : "none";
-    if (btnEdit) {
-      btnEdit.innerText = isEditing ? "[OK] Salva Posizioni" : "[Edit] Sposta Controlli";
-      btnEdit.classList.toggle("active", isEditing);
-    }
-  }
-
-  // Interruttore on/off e rilevamento browser
-  function setupToggleAndDetection() {
-    const chk = document.getElementById("chkTouchControls");
-    const btnEdit = document.getElementById("btnEditTouchLayout");
-    const overlay = document.getElementById("touchControlsOverlay");
-
-    // Rileva se il dispositivo supporta il touch
-    const isTouchDevice =
-      "ontouchstart" in window ||
-      navigator.maxTouchPoints > 0 ||
+    // Auto-rilevamento dispositivo mobile/touchscreen
+    const isTouchDevice = (
+      ("ontouchstart" in window) ||
+      (navigator.maxTouchPoints > 0) ||
       (window.matchMedia && window.matchMedia("(pointer: coarse)").matches) ||
-      window.innerWidth <= 850;
+      (window.innerWidth <= 850)
+    );
 
-    let isEnabled = false;
-    const saved = localStorage.getItem(STORAGE_KEY_ENABLED);
-    if (saved !== null) {
-      isEnabled = saved === "true";
-    } else {
-      isEnabled = isTouchDevice;
+    let touchEnabled = isTouchDevice;
+    const savedEnabled = localStorage.getItem(STORAGE_KEY_ENABLED);
+    if (savedEnabled !== null) {
+      touchEnabled = savedEnabled === "true";
     }
 
-    function setOverlayVisibility(show) {
-      if (overlay) overlay.style.display = show ? "block" : "none";
-      if (btnEdit) btnEdit.style.display = show ? "inline-flex" : "none";
-      if (chk) chk.checked = show;
-      if (!show && isEditing) toggleEditMode(false);
-      try { localStorage.setItem(STORAGE_KEY_ENABLED, show ? "true" : "false"); } catch (e) {}
+    function setTouchEnabled(enabled) {
+      touchEnabled = enabled;
+      localStorage.setItem(STORAGE_KEY_ENABLED, enabled ? "true" : "false");
+      if (chkTouch) chkTouch.checked = enabled;
+      if (overlay) {
+        overlay.style.display = enabled ? "block" : "none";
+        if (!enabled && isEditing) {
+          isEditing = false;
+          unselectAllWidgets();
+          overlay.classList.remove("editing-mode");
+          if (toolbar) toolbar.style.display = "none";
+        }
+      }
     }
 
-    if (chk) {
-      chk.addEventListener("change", (e) => {
-        setOverlayVisibility(e.target.checked);
+    if (chkTouch) {
+      chkTouch.checked = touchEnabled;
+      chkTouch.addEventListener("change", (e) => {
+        setTouchEnabled(e.target.checked);
       });
     }
 
     if (btnEdit) {
       btnEdit.addEventListener("click", () => {
-        toggleEditMode();
+        if (!touchEnabled) {
+          setTouchEnabled(true);
+        }
+        isEditing = !isEditing;
+        if (overlay) overlay.classList.toggle("editing-mode", isEditing);
+        if (toolbar) toolbar.style.display = isEditing ? "flex" : "none";
+        if (isEditing) {
+          unselectAllWidgets();
+        }
       });
     }
 
-    setOverlayVisibility(isEnabled);
-  }
-
-  // Avvio al caricamento del DOM
-  function init() {
-    loadSavedLayout();
-    applyLayoutToDom();
-    setupDpad();
-    setupActionButtons();
-    setupDragAndDrop();
-    setupToggleAndDetection();
+    setTouchEnabled(touchEnabled);
   }
 
   if (document.readyState === "loading") {
@@ -533,21 +673,4 @@
   } else {
     init();
   }
-
-  window.touchControls = {
-    toggle: (val) => {
-      const chk = document.getElementById("chkTouchControls");
-      if (chk) {
-        chk.checked = val !== undefined ? val : !chk.checked;
-        chk.dispatchEvent(new Event("change"));
-      }
-    },
-    edit: toggleEditMode,
-    reset: () => {
-      currentLayout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
-      saveCurrentLayout();
-      applyLayoutToDom();
-    }
-  };
-
 })();
