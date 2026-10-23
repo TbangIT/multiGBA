@@ -657,69 +657,190 @@ kbd {
   overflow: hidden;
 }
 
-.touch-cluster {
+.touch-widget {
   position: absolute;
   pointer-events: auto;
-  opacity: var(--touch-opacity, 0.75);
+  opacity: var(--touch-opacity, 0.8);
   transform-origin: center center;
   transition: opacity 0.2s ease;
-  padding: 4px;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.touch-cluster.dragging {
-  opacity: 0.95;
-  filter: drop-shadow(0 0 12px rgba(99, 102, 241, 0.6));
+/* Pulsante Flottante Rapido per Modifica Layout sull'Overlay */
+.touch-floating-edit-btn {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid rgba(99, 102, 241, 0.6);
+  color: #e0e7ff;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: monospace;
+  padding: 5px 12px;
+  border-radius: 20px;
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 950;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
-.touch-overlay.editing-mode .touch-cluster {
-  border: 2px dashed #818cf8 !important;
-  border-radius: 12px;
-  background: rgba(99, 102, 241, 0.15) !important;
-  cursor: move;
+.touch-floating-edit-btn:hover,
+.touch-floating-edit-btn:active {
+  background: #4f46e5;
+  border-color: #a5b4fc;
+  color: #ffffff;
 }
 
-.touch-drag-handle {
+.touch-overlay.editing-mode .touch-floating-edit-btn {
+  display: none !important;
+}
+
+/* Posizioni di Default pure CSS per ciascun Widget (evita il raggruppamento in alto a sinistra) */
+.touch-widget[data-touch-id="dpad"] {
+  bottom: 25px;
+  left: 25px;
+}
+
+.touch-widget[data-touch-id="btnL"] {
+  top: 25px;
+  left: 20px;
+}
+
+.touch-widget[data-touch-id="btnR"] {
+  top: 25px;
+  right: 20px;
+}
+
+.touch-widget[data-touch-id="btnB"] {
+  bottom: 35px;
+  right: 95px;
+}
+
+.touch-widget[data-touch-id="btnA"] {
+  bottom: 85px;
+  right: 25px;
+}
+
+.touch-widget[data-touch-id="btnAB"] {
+  bottom: 25px;
+  right: 25px;
+}
+
+.touch-widget[data-touch-id="btnSelect"] {
+  bottom: 22px;
+  left: calc(50% - 95px);
+}
+
+.touch-widget[data-touch-id="btnStart"] {
+  bottom: 22px;
+  left: calc(50% - 25px);
+}
+
+.touch-widget[data-touch-id="btnSpeed"] {
+  bottom: 22px;
+  left: calc(50% + 45px);
+}
+
+.touch-widget.dragging {
+  opacity: 1 !important;
+  z-index: 1001 !important;
+  filter: drop-shadow(0 0 16px rgba(56, 189, 248, 0.8));
+}
+
+.touch-drag-badge {
   display: none;
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
   font-size: 10px;
   font-family: monospace;
   font-weight: bold;
-  color: #c7d2fe;
+  color: #e0e7ff;
   background: #312e81;
-  padding: 2px 6px;
+  border: 1px solid #6366f1;
+  padding: 1px 6px;
   border-radius: 4px;
-  text-align: center;
-  margin-bottom: 4px;
+  white-space: nowrap;
   pointer-events: none;
+  z-index: 1002;
 }
 
-.touch-overlay.editing-mode .touch-drag-handle {
+.touch-overlay.editing-mode .touch-widget {
+  outline: 2px dashed rgba(129, 140, 248, 0.6);
+  outline-offset: 4px;
+  border-radius: 8px;
+  cursor: grab;
+}
+
+.touch-overlay.editing-mode .touch-widget.selected-widget {
+  outline: 2px solid #38bdf8 !important;
+  outline-offset: 4px;
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.6);
+}
+
+.touch-overlay.editing-mode .touch-drag-badge {
   display: block;
+}
+
+.touch-overlay.editing-mode .touch-widget.selected-widget .touch-drag-badge {
+  background: #0284c7;
+  border-color: #38bdf8;
+  color: #fff;
 }
 
 /* Edit Toolbar */
 .touch-edit-toolbar {
   position: fixed;
-  top: 14px;
+  top: 12px;
   left: 50%;
   transform: translateX(-50%);
-  background: #18181b;
+  background: rgba(24, 24, 27, 0.95);
   border: 1px solid #6366f1;
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 10px 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  z-index: 999;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.8);
+  z-index: 1100;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.85);
   pointer-events: auto;
   max-width: 95vw;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.edit-toolbar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .edit-toolbar-title {
   font-size: 12px;
   font-weight: bold;
+  color: #c7d2fe;
+}
+
+.edit-selected-badge {
+  font-size: 11px;
+  font-family: monospace;
+  background: #312e81;
   color: #a5b4fc;
-  text-align: center;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid #4f46e5;
 }
 
 .edit-toolbar-controls {
@@ -739,7 +860,7 @@ kbd {
 }
 
 .edit-toolbar-controls input[type="range"] {
-  width: 90px;
+  width: 85px;
   cursor: pointer;
 }
 
@@ -749,6 +870,8 @@ kbd {
   border: 1px solid #3f3f46;
   font-size: 11px;
   padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
 }
 
 .btn-primary {
@@ -758,174 +881,280 @@ kbd {
   font-weight: bold;
   font-size: 11px;
   padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
 }
 
-/* Tasti Generici */
-.touch-btn {
-  background: rgba(24, 24, 27, 0.65);
-  border: 2px solid rgba(255, 255, 255, 0.2);
-  color: #f4f4f5;
-  font-weight: bold;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+/* ========================================================
+   CROCE DIREZIONALE GBA (D-PAD) - Design Autentico & 3D Tilt
+   ======================================================== */
+.touch-widget-dpad {
+  touch-action: none;
+}
+
+.touch-dpad-dish {
+  width: calc(144px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(144px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 50%;
+  background: radial-gradient(circle at 45% 45%, rgba(39, 41, 48, 0.7) 0%, rgba(18, 19, 23, 0.9) 75%);
+  border: 2px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 3px 8px rgba(0, 0, 0, 0.75), 0 6px 16px rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  position: relative;
+  touch-action: none;
+}
+
+.touch-dpad-cross {
+  width: calc(126px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(126px * var(--widget-scale, var(--touch-scale, 1.0)));
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  perspective: 350px;
+  transform-style: preserve-3d;
+  transition: transform 0.06s ease-out;
+}
+
+/* 3D Rocker Tilt Feedback quando la croce viene premuta */
+.touch-dpad-cross.tilt-up { transform: perspective(350px) rotateX(8deg); }
+.touch-dpad-cross.tilt-down { transform: perspective(350px) rotateX(-8deg); }
+.touch-dpad-cross.tilt-left { transform: perspective(350px) rotateY(-8deg); }
+.touch-dpad-cross.tilt-right { transform: perspective(350px) rotateY(8deg); }
+.touch-dpad-cross.tilt-up-left { transform: perspective(350px) rotateX(6deg) rotateY(-6deg); }
+.touch-dpad-cross.tilt-up-right { transform: perspective(350px) rotateX(6deg) rotateY(6deg); }
+.touch-dpad-cross.tilt-down-left { transform: perspective(350px) rotateX(-6deg) rotateY(-6deg); }
+.touch-dpad-cross.tilt-down-right { transform: perspective(350px) rotateX(-6deg) rotateY(6deg); }
+
+/* Bracci della croce D-Pad */
+.touch-dpad-arm {
+  position: absolute;
+  background: linear-gradient(145deg, #2c2e36 0%, #1c1d22 100%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  touch-action: none;
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.5);
+  transition: background 0.04s ease, border-color 0.04s ease, box-shadow 0.04s ease;
+}
+
+/* Freccia direzionale incisa */
+.touch-dpad-arm .dpad-arrow {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: calc(15px * var(--widget-scale, var(--touch-scale, 1.0)));
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  transition: color 0.04s ease, transform 0.04s ease, text-shadow 0.04s ease;
+}
+
+/* Posizionamento geometrico perfetto dei bracci */
+.dpad-arm-up {
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(42px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 6px 6px 0 0;
+  border-bottom: none;
+}
+
+.dpad-arm-down {
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(42px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 0 0 6px 6px;
+  border-top: none;
+}
+
+.dpad-arm-left {
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: calc(42px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 6px 0 0 6px;
+  border-right: none;
+}
+
+.dpad-arm-right {
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: calc(42px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 0 6px 6px 0;
+  border-left: none;
+}
+
+/* Mozzo centrale e fossetta concava per il pollice */
+.touch-dpad-center-hub {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  background: linear-gradient(145deg, #2a2c33 0%, #1c1d22 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.touch-dpad-dimple {
+  width: calc(24px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(24px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 50%;
+  background: radial-gradient(circle, #121316 35%, #23252a 100%);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.8), 0 1px 1px rgba(255, 255, 255, 0.1);
+}
+
+/* Animazione di Pressione D-Pad: SENZA spostamento visivo, con bagliore incavato e freccia accesa */
+.touch-dpad-arm.active {
+  background: linear-gradient(145deg, #4f46e5 0%, #3730a3 100%) !important;
+  border-color: #818cf8 !important;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.5), 0 0 14px rgba(99, 102, 241, 0.75) !important;
+}
+
+.touch-dpad-arm.active .dpad-arrow {
+  color: #ffffff !important;
+  text-shadow: 0 0 8px #c7d2fe, 0 1px 2px #000000 !important;
+  transform: scale(1.18);
+}
+
+/* ========================================================
+   TASTI SINGOLI GBA (A, B, A+B, L, R, SELECT, START, 2X)
+   ======================================================== */
+.touch-btn {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
-  transition: transform 0.05s ease, background-color 0.05s ease, border-color 0.05s ease;
+  transition: transform 0.05s ease, filter 0.05s ease, box-shadow 0.05s ease;
 }
 
-.touch-btn:active,
-.touch-btn.active {
-  background: rgba(99, 102, 241, 0.85) !important;
-  border-color: #a5b4fc !important;
-  transform: scale(0.92) !important;
-  box-shadow: 0 0 16px rgba(99, 102, 241, 0.6);
-}
-
-/* D-Pad Component */
-.touch-dpad-base {
-  width: calc(130px * var(--touch-scale, 1.0));
-  height: calc(130px * var(--touch-scale, 1.0));
-  position: relative;
-  border-radius: 50%;
-  background: rgba(39, 39, 42, 0.4);
-  border: 2px solid rgba(255, 255, 255, 0.12);
-  touch-action: none;
-}
-
-.touch-dpad-btn {
-  position: absolute;
-  width: calc(42px * var(--touch-scale, 1.0));
-  height: calc(42px * var(--touch-scale, 1.0));
-  font-size: calc(18px * var(--touch-scale, 1.0));
-  border-radius: 8px;
-}
-
-.touch-dpad-up {
-  top: 4px;
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-.touch-dpad-down {
-  bottom: 4px;
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-.touch-dpad-left {
-  left: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-}
-
-.touch-dpad-right {
-  right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-}
-
-.touch-dpad-center {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: calc(34px * var(--touch-scale, 1.0));
-  height: calc(34px * var(--touch-scale, 1.0));
-  transform: translate(-50%, -50%);
-  background: rgba(24, 24, 27, 0.5);
-  border-radius: 50%;
-  pointer-events: none;
-}
-
-/* Action Buttons Cluster (A, B, A+B) */
-.touch-actions-group {
-  position: relative;
-  width: calc(140px * var(--touch-scale, 1.0));
-  height: calc(130px * var(--touch-scale, 1.0));
-}
-
-.touch-btn-round {
-  position: absolute;
-  border-radius: 50%;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
-}
-
-.touch-btn-b {
-  width: calc(52px * var(--touch-scale, 1.0));
-  height: calc(52px * var(--touch-scale, 1.0));
-  bottom: 6px;
-  left: 6px;
-  font-size: calc(18px * var(--touch-scale, 1.0));
-  background: rgba(185, 28, 28, 0.65);
-  border-color: rgba(239, 68, 68, 0.4);
-}
-
-.touch-btn-b:active, .touch-btn-b.active {
-  background: rgba(220, 38, 38, 0.9) !important;
-  border-color: #fca5a5 !important;
-}
-
+/* Tasto A (Rosso/Rubino GBA) */
 .touch-btn-a {
-  width: calc(52px * var(--touch-scale, 1.0));
-  height: calc(52px * var(--touch-scale, 1.0));
-  top: 6px;
-  right: 6px;
-  font-size: calc(18px * var(--touch-scale, 1.0));
-  background: rgba(16, 185, 129, 0.65);
-  border-color: rgba(52, 211, 153, 0.4);
+  width: calc(56px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(56px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 50%;
+  background: linear-gradient(145deg, #be123c 0%, #881337 100%);
+  border: 2px solid #fda4af;
+  color: #fff;
+  font-size: calc(20px * var(--widget-scale, var(--touch-scale, 1.0)));
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45), inset 0 1px 2px rgba(255, 255, 255, 0.35);
 }
 
 .touch-btn-a:active, .touch-btn-a.active {
-  background: rgba(5, 150, 105, 0.9) !important;
-  border-color: #a7f3d0 !important;
+  background: linear-gradient(145deg, #e11d48 0%, #9f1239 100%) !important;
+  border-color: #ffffff !important;
+  box-shadow: 0 0 18px rgba(244, 63, 94, 0.8), inset 0 3px 6px rgba(0, 0, 0, 0.6) !important;
+  transform: scale(0.92);
 }
 
+/* Tasto B (Ambra/Arancio GBA) */
+.touch-btn-b {
+  width: calc(56px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(56px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 50%;
+  background: linear-gradient(145deg, #b45309 0%, #78350f 100%);
+  border: 2px solid #fde68a;
+  color: #fff;
+  font-size: calc(20px * var(--widget-scale, var(--touch-scale, 1.0)));
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45), inset 0 1px 2px rgba(255, 255, 255, 0.35);
+}
+
+.touch-btn-b:active, .touch-btn-b.active {
+  background: linear-gradient(145deg, #d97706 0%, #92400e 100%) !important;
+  border-color: #ffffff !important;
+  box-shadow: 0 0 18px rgba(245, 158, 11, 0.8), inset 0 3px 6px rgba(0, 0, 0, 0.6) !important;
+  transform: scale(0.92);
+}
+
+/* Tasto Combinato A+B */
 .touch-btn-ab {
-  width: calc(36px * var(--touch-scale, 1.0));
-  height: calc(36px * var(--touch-scale, 1.0));
-  top: 46px;
-  left: 52px;
-  font-size: calc(11px * var(--touch-scale, 1.0));
-  background: rgba(55, 65, 81, 0.65);
-  border-color: rgba(156, 163, 175, 0.4);
+  width: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%);
+  border: 2px solid #c4b5fd;
+  color: #fff;
+  font-size: calc(12px * var(--widget-scale, var(--touch-scale, 1.0)));
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.45), inset 0 1px 2px rgba(255, 255, 255, 0.3);
 }
 
-/* Shoulder Buttons (L / R) */
-#clusterShoulders {
-  display: flex;
-  justify-content: space-between;
-  width: calc(100vw - 32px);
-  pointer-events: none;
+.touch-btn-ab:active, .touch-btn-ab.active {
+  background: linear-gradient(135deg, #9333ea 0%, #6366f1 100%) !important;
+  border-color: #ffffff !important;
+  box-shadow: 0 0 16px rgba(168, 85, 247, 0.8), inset 0 2px 4px rgba(0, 0, 0, 0.6) !important;
+  transform: scale(0.92);
 }
 
+/* Tasti Dorsali L ed R */
 .touch-btn-shoulder {
-  pointer-events: auto;
-  width: calc(74px * var(--touch-scale, 1.0));
-  height: calc(36px * var(--touch-scale, 1.0));
-  border-radius: 8px;
-  font-size: calc(14px * var(--touch-scale, 1.0));
+  width: calc(68px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(34px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 8px 8px 14px 14px;
+  background: linear-gradient(180deg, #3f3f46 0%, #27272a 100%);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-top: 2px solid rgba(255, 255, 255, 0.4);
+  color: #f4f4f5;
+  font-size: calc(14px * var(--widget-scale, var(--touch-scale, 1.0)));
   letter-spacing: 1px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.45);
 }
 
-/* Menu Buttons (Select, Start, 2x) */
-.touch-menu-row {
-  display: flex;
-  gap: calc(10px * var(--touch-scale, 1.0));
-  align-items: center;
+.touch-btn-shoulder:active, .touch-btn-shoulder.active {
+  background: linear-gradient(180deg, #6366f1 0%, #4338ca 100%) !important;
+  border-color: #a5b4fc !important;
+  box-shadow: 0 0 14px rgba(99, 102, 241, 0.7) !important;
+  transform: scale(0.94);
 }
 
+/* Tasti Menu Pillola (SELECT, START) */
 .touch-btn-pill {
-  width: calc(64px * var(--touch-scale, 1.0));
-  height: calc(28px * var(--touch-scale, 1.0));
+  width: calc(64px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(28px * var(--widget-scale, var(--touch-scale, 1.0)));
   border-radius: 14px;
-  font-size: calc(10px * var(--touch-scale, 1.0));
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #e2e8f0;
+  font-size: calc(10px * var(--widget-scale, var(--touch-scale, 1.0)));
   letter-spacing: 0.5px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.touch-btn-pill:active, .touch-btn-pill.active {
+  background: #475569 !important;
+  border-color: #cbd5e1 !important;
+  transform: scale(0.94);
+}
+
+/* Tasto Velocita Turbo 2X */
+.touch-btn-speed {
+  width: calc(48px * var(--widget-scale, var(--touch-scale, 1.0)));
+  background: rgba(6, 78, 59, 0.85);
+  border-color: #34d399;
+  color: #a7f3d0;
+  font-size: calc(11px * var(--widget-scale, var(--touch-scale, 1.0)));
+}
+
+.touch-btn-speed:active, .touch-btn-speed.active {
+  background: #059669 !important;
+  border-color: #6ee7b7 !important;
+  color: #ffffff !important;
+  transform: scale(0.94);
 }
 
 /* Mobile Responsive Tweaks */
