@@ -1,401 +1,1199 @@
-<!DOCTYPE html>
-<html lang="it">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rebit GBA Online - WebRTC P2P Netplay (GitHub Pages Edition)</title>
-  <link rel="stylesheet" href="style.css">
-  <script src="peerjs.min.js"></script>
-  <script src="p2p-link.js"></script>
-  <script src="cores/mgba_dual.js"></script>
-  <script src="touch-controls.js"></script>
-</head>
-<body>
-  <header>
-    <div class="logo-area">
-      <div class="logo-badge">P2P WEBRTC</div>
-      <h1>mGBA Online Netplay</h1>
-    </div>
-    <div class="status-bar">
-      <div class="badge" id="romBadge">ROM: Inizializzazione...</div>
-      <div class="badge" id="saveBadge">Salvataggio: Nessuno</div>
-      <div class="badge" id="modeBadge">Modalita: Singolo (P1)</div>
-      <div class="badge active" id="fpsBadge"><span class="indicator"></span> 0 FPS</div>
-      <div class="badge" id="speedBadge">Velocita: 1x (60 FPS)</div>
-    </div>
-  </header>
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
 
-  <main>
-    <div class="screen-container" id="screenWrapper">
-      <!-- In-Game floating notification banner with dismiss button -->
-      <div id="gameNotification" class="game-notification" style="display: none;">
-        <span id="gameNotificationText"></span>
-        <button id="btnCloseGameNotification" class="notification-close-btn" title="Chiudi avviso">[X]</button>
-      </div>
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background-color: #121214;
+  color: #f4f4f5;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
 
-      <!-- GBA Canvas: 240x160 native, scaled pixel-perfect -->
-      <canvas id="screenCanvas" width="240" height="160" style="width: 720px; height: 480px;"></canvas>
+header {
+  background-color: #1a1a1e;
+  border-bottom: 1px solid #27272a;
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
 
-      <!-- Canvas status & pause overlay (Background pause / Desync wait) -->
-      <div class="canvas-overlay" id="canvasOverlay" style="display: none;">
-        <div class="overlay-card" id="overlayCard">
-          <button class="overlay-close-btn" id="btnCloseOverlay" title="Chiudi avviso">[X]</button>
-          <div class="overlay-icon" id="overlayIcon">[PAUSA]</div>
-          <div class="overlay-title" id="overlayTitle">Simulazione in Pausa</div>
-          <div class="overlay-subtitle" id="overlaySubtitle">La scheda e in secondo piano</div>
-          <div class="overlay-hint" id="overlayHint">Clicca qui per riprendere</div>
-        </div>
-      </div>
+.logo-area {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 
-      <!-- Loading overlay -->
-      <div class="loading-overlay" id="loadingOverlay">
-        <div class="spinner"></div>
-        <div id="loadingText" style="font-weight: 600; font-size: 16px;">Inizializzazione mGBA WASM...</div>
-        <div class="progress-bar-container">
-          <div class="progress-bar" id="progressBar"></div>
-        </div>
-        <div id="loadingDetail" style="font-size: 12px; color: #a1a1aa;">Caricamento ROM in corso...</div>
-      </div>
-    </div>
+.logo-badge {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: white;
+  font-weight: 800;
+  font-size: 14px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  letter-spacing: 0.5px;
+}
 
-    <!-- Controls Panel -->
-    <div class="controls-panel">
-      <button class="primary" id="btnPlayPause">[||] Pausa</button>
-      <button class="highlight" id="btnSpeedToggle">[&gt;&gt;] Velocita: 1x</button>
-      <button id="btnAudioToggle">[Audio] Attivo</button>
-      <button id="btnReset">[&lt;&gt;] Riavvia</button>
+h1 {
+  font-size: 18px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
-      <div style="height: 24px; width: 1px; background: #3f3f46; margin: 0 4px;"></div>
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 
-      <!-- ROM Loader -->
-      <input type="file" id="inputRomFile" accept=".gba" style="display: none;">
-      <button id="btnLoadRom">[ROM] Carica .gba</button>
+.badge {
+  background: #27272a;
+  border: 1px solid #3f3f46;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: monospace;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 
-      <!-- Save Management -->
-      <input type="file" id="inputSaveFile" accept=".sav" style="display: none;">
-      <button id="btnImportSave">[+] Carica .sav</button>
-      <button id="btnExportSave">[-] Scarica .sav</button>
-      <button id="btnOpenSavestateModal" style="background: #312e81; border-color: #6366f1;">
-        [#] Savestate di Emergenza
-      </button>
-      <button id="btnOpenKeybindsModal" style="background: #1e293b; border-color: #475569;">
-        [K] Comandi Tastiera
-      </button>
+.badge.active {
+  background: #1e3a8a;
+  border-color: #3b82f6;
+  color: #93c5fd;
+}
 
-      <div style="height: 24px; width: 1px; background: #3f3f46; margin: 0 4px;"></div>
+.badge.speed-2x {
+  background: #701a75;
+  border-color: #d946ef;
+  color: #f5d0fe;
+}
 
-      <!-- Online Netplay Link Cable Trigger -->
-      <button class="highlight" id="btnOpenNetplayModal" style="background: linear-gradient(135deg, #4f46e5, #7c3aed); border-color: #8b5cf6;">
-        [ONLINE] Cavo Link P2P
-      </button>
+.indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10b981;
+}
 
-      <!-- Mode selector (Local) -->
-      <select class="mode-select" id="modeSelect">
-        <option value="solo">Schermo Singolo (P1)</option>
-        <option value="dual">Dual Split-Screen (P1 + P2)</option>
-      </select>
+main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px;
+  gap: 20px;
+}
 
-      <button id="btnToggleScreenView">[O] Vista: Singolo</button>
+.screen-container {
+  background: #000;
+  border: 3px solid #27272a;
+  border-radius: 12px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
 
-      <div style="height: 24px; width: 1px; background: #3f3f46; margin: 0 4px;"></div>
+#screenCanvas {
+  image-rendering: -moz-crisp-edges;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  background-color: #000;
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
 
-      <!-- Touch Controls Toggle -->
-      <label class="toggle-control" id="lblTouchControlsToggle" title="Mostra/Nascondi i pulsanti touch su schermo (utile per smartphone e tablet)">
-        <input type="checkbox" id="chkTouchControls">
-        <span>[T] Controlli Touch</span>
-      </label>
-      <button id="btnEditTouchLayout" style="font-size: 12px; padding: 4px 8px; display: none; background: #374151;">
-        [Sposta/Ridimensiona]
-      </button>
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(18, 18, 20, 0.95);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  z-index: 10;
+}
 
-      <div style="height: 24px; width: 1px; background: #3f3f46; margin: 0 4px;"></div>
+.spinner {
+  width: 44px;
+  height: 44px;
+  border: 4px solid #27272a;
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
 
-      <!-- Debug Toggle: Pause on Background -->
-      <label class="toggle-control" id="lblPauseOnBackground" title="Pausa la simulazione quando la finestra perde il focus (utile per debug)">
-        <input type="checkbox" id="chkPauseOnBackground">
-        <span>[||] Pausa se in background (Debug)</span>
-      </label>
-    </div>
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 
-    <!-- Keybindings Guide -->
-    <div class="keybindings-info">
-      <div style="font-weight: 600; color: #f4f4f5; margin-bottom: 4px;">Comandi Tastiera GBA (Layout Rebit):</div>
-      <div class="key-grid">
-        <div class="key-item"><span>D-Pad (Movimento)</span> <span><kbd>&uarr;</kbd> <kbd>&darr;</kbd> <kbd>&larr;</kbd> <kbd>&rarr;</kbd></span></div>
-        <div class="key-item"><span>Pulsante A (Conferma)</span> <span><kbd>Z</kbd> oppure <kbd>J</kbd></span></div>
-        <div class="key-item"><span>Pulsante B (Annulla)</span> <span><kbd>X</kbd> oppure <kbd>K</kbd></span></div>
-        <div class="key-item"><span>Pulsante START</span> <span><kbd>Enter</kbd></span></div>
-        <div class="key-item"><span>Pulsante SELECT</span> <span><kbd>Shift</kbd> / <kbd>Backspace</kbd></span></div>
-        <div class="key-item"><span>Dorsali L / R</span> <span><kbd>A</kbd> / <kbd>S</kbd></span></div>
-        <div class="key-item"><span>Fast-Forward (2x Speed)</span> <span><kbd>Spazio</kbd></span></div>
-      </div>
-    </div>
-  </main>
+.progress-bar-container {
+  width: 280px;
+  height: 8px;
+  background: #27272a;
+  border-radius: 4px;
+  overflow: hidden;
+}
 
-  <!-- Touch Controls Overlay (Smartphones & Tablets) -->
-  <div id="touchControlsOverlay" class="touch-overlay" style="display: none;">
-    <!-- Edit Toolbar (active during layout modification) -->
-    <div id="touchEditToolbar" class="touch-edit-toolbar" style="display: none;">
-      <div class="edit-toolbar-title">[EDIT LAYOUT] Trascina i blocchi per posizionarli</div>
-      <div class="edit-toolbar-controls">
-        <label>
-          Scala:
-          <input type="range" id="touchSizeSlider" min="0.7" max="1.5" step="0.05" value="1.0">
-          <span id="touchSizeLabel">100%</span>
-        </label>
-        <label>
-          Trasparenza:
-          <input type="range" id="touchOpacitySlider" min="0.3" max="1.0" step="0.05" value="0.75">
-          <span id="touchOpacityLabel">75%</span>
-        </label>
-        <button id="btnResetTouchLayout" class="btn-subtle">[↺] Reset</button>
-        <button id="btnCloseTouchEdit" class="btn-primary">[OK] Fatto</button>
-      </div>
-    </div>
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #6366f1, #a855f7);
+  transition: width 0.1s ease;
+}
 
-    <!-- Cluster Shoulders (L & R) -->
-    <div id="clusterShoulders" class="touch-cluster" data-cluster="shoulders">
-      <div class="touch-drag-handle">[L/R]</div>
-      <button class="touch-btn touch-btn-shoulder" id="btnTouchL" data-key="L">L</button>
-      <button class="touch-btn touch-btn-shoulder" id="btnTouchR" data-key="R">R</button>
-    </div>
+.controls-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: #1a1a1e;
+  border: 1px solid #27272a;
+  border-radius: 12px;
+  padding: 12px 20px;
+  max-width: 960px;
+  width: 100%;
+}
 
-    <!-- Cluster D-Pad -->
-    <div id="clusterDpad" class="touch-cluster" data-cluster="dpad">
-      <div class="touch-drag-handle">[D-PAD]</div>
-      <div class="touch-dpad-base" id="touchDpadBase">
-        <button class="touch-btn touch-dpad-btn touch-dpad-up" id="btnTouchUp" data-key="UP">&uarr;</button>
-        <button class="touch-btn touch-dpad-btn touch-dpad-left" id="btnTouchLeft" data-key="LEFT">&larr;</button>
-        <div class="touch-dpad-center"></div>
-        <button class="touch-btn touch-dpad-btn touch-dpad-right" id="btnTouchRight" data-key="RIGHT">&rarr;</button>
-        <button class="touch-btn touch-dpad-btn touch-dpad-down" id="btnTouchDown" data-key="DOWN">&darr;</button>
-      </div>
-    </div>
+button {
+  background: #27272a;
+  color: #f4f4f5;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.15s ease;
+}
 
-    <!-- Cluster Menu (Select, Start, 2x) -->
-    <div id="clusterMenu" class="touch-cluster" data-cluster="menu">
-      <div class="touch-drag-handle">[MENU]</div>
-      <div class="touch-menu-row">
-        <button class="touch-btn touch-btn-pill" id="btnTouchSelect" data-key="SELECT">SELECT</button>
-        <button class="touch-btn touch-btn-pill" id="btnTouchSpeed" data-key="SPEED">2X</button>
-        <button class="touch-btn touch-btn-pill" id="btnTouchStart" data-key="START">START</button>
-      </div>
-    </div>
+button:hover {
+  background: #3f3f46;
+  border-color: #52525b;
+}
 
-    <!-- Cluster Actions (B, A, A+B) -->
-    <div id="clusterActions" class="touch-cluster" data-cluster="actions">
-      <div class="touch-drag-handle">[A/B]</div>
-      <div class="touch-actions-group">
-        <button class="touch-btn touch-btn-round touch-btn-b" id="btnTouchB" data-key="B">B</button>
-        <button class="touch-btn touch-btn-round touch-btn-ab" id="btnTouchAB" data-key="AB" title="Premi A e B contemporaneamente">A+B</button>
-        <button class="touch-btn touch-btn-round touch-btn-a" id="btnTouchA" data-key="A">A</button>
-      </div>
-    </div>
-  </div>
+button.primary {
+  background: #4f46e5;
+  border-color: #6366f1;
+}
 
-  <!-- Rebit-Style Link Cable Online Modal (WebRTC P2P Edition) -->
-  <div class="modal-backdrop" id="netplayModal" style="display: none;">
-    <div class="modal-card">
-      <div class="modal-header">
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 16px; font-weight: bold; color: #818cf8;">[ONLINE P2P]</span>
-          <h2>GBA Link Cable (Multiplayer WebRTC P2P)</h2>
-        </div>
-        <button class="modal-close" id="btnCloseNetplayModal">[X]</button>
-      </div>
+button.primary:hover {
+  background: #4338ca;
+}
 
-      <div class="modal-tabs">
-        <button class="tab-btn active" id="tabHostBtn">Ospita Stanza (Host)</button>
-        <button class="tab-btn" id="tabJoinBtn">Partecipa a Stanza (Guest)</button>
-      </div>
+button.highlight {
+  background: #9333ea;
+  border-color: #a855f7;
+}
 
-      <!-- Host Panel -->
-      <div class="modal-body" id="tabHostContent">
-        <p style="font-size: 13px; color: #a1a1aa; margin-bottom: 12px;">
-          Crea una stanza online a 1-click: riceverai un link diretto da inviare al compagno. Appena lo apre nel browser, la connessione si avvia automaticamente!
-        </p>
-        <div class="form-group">
-          <label>Tuo Nome Giocatore:</label>
-          <input type="text" id="hostPlayerName" value="Player 1" style="width: 100%;">
-        </div>
-        <div class="form-group">
-          <label>Velocita Stanza:</label>
-          <select id="hostRoomSpeed" class="mode-select" style="width: 100%;">
-            <option value="1">1x Velocita (60 FPS Normale)</option>
-            <option value="2" selected>2x Velocita (120 FPS Fast-Forward Rebit)</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Visualizzazione Schermo:</label>
-          <select id="hostScreenView" class="mode-select" style="width: 100%;">
-            <option value="solo" selected>Solo il mio schermo (240x160)</option>
-            <option value="split">Entrambi gli schermi (Split-Screen 480x160)</option>
-          </select>
-        </div>
+button.highlight:hover {
+  background: #7e22ce;
+}
 
-        <button class="primary" id="btnStartHosting" style="width: 100%; justify-content: center; padding: 10px; margin-top: 8px;">
-          [+] Crea Stanza Online (1-Click)
-        </button>
+.mode-select {
+  background: #27272a;
+  color: #f4f4f5;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 14px;
+}
 
-        <div id="hostWaitingArea" style="display: none; margin-top: 16px; padding: 14px; background: #18181b; border: 1px solid #6366f1; border-radius: 8px; text-align: center;">
-          <div style="font-size: 11px; color: #a5b4fc; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Codice Stanza</div>
-          <div id="generatedRoomCode" style="font-size: 26px; font-weight: 800; color: #4ade80; letter-spacing: 2px; margin-bottom: 10px;">GBA-0000</div>
-          <div style="display: flex; gap: 8px; justify-content: center; margin-bottom: 12px; flex-wrap: wrap;">
-            <button id="btnCopyRoomLink" style="font-size: 12px; padding: 8px 14px; background: #065f46; border-color: #10b981; font-weight: bold;">[Copia] Link Diretto (Invia al compagno)</button>
-            <button id="btnCopyRoomCode" style="font-size: 12px; padding: 8px 14px;">[Copia] Solo Codice</button>
-          </div>
-          <div class="status-notice" id="hostStatusNotice">In attesa che il compagno apra il link ed entri nella stanza...</div>
+.netplay-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
-          <!-- Fallback manuale -->
-          <details style="margin-top: 14px; font-size: 11px; color: #71717a; text-align: left; cursor: pointer;">
-            <summary>[Opzionale] Token manuale offline (se i WebSocket sono bloccati)</summary>
-            <div style="margin-top: 8px;">
-              <textarea id="hostOfferCode" class="signal-box" readonly rows="2" placeholder="Codice invito manuale..."></textarea>
-              <textarea id="hostAnswerInput" class="signal-box" rows="2" placeholder="Incolla risposta manuale (GBA1...)" style="margin-top: 4px;"></textarea>
-              <button id="btnHostConnect" style="width: 100%; margin-top: 4px; font-size: 11px; padding: 6px;">[-&gt;] Collega Manualmente</button>
-            </div>
-          </details>
-        </div>
-      </div>
+input[type="text"] {
+  background: #27272a;
+  color: #f4f4f5;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 14px;
+  width: 120px;
+  text-transform: uppercase;
+}
 
-      <!-- Join Panel -->
-      <div class="modal-body" id="tabJoinContent" style="display: none;">
-        <p style="font-size: 13px; color: #a1a1aa; margin-bottom: 12px;">
-          Inserisci il codice della stanza (o incolla il link dell'Host) per collegarti all'istante via cavo link P2P.
-        </p>
-        <div class="form-group">
-          <label>Tuo Nome Giocatore:</label>
-          <input type="text" id="joinPlayerName" value="Player 2" style="width: 100%;">
-        </div>
-        <div class="form-group">
-          <label>Codice Stanza o Link dell'Host:</label>
-          <input type="text" id="joinRoomCode" placeholder="Es: GBA-4821 oppure incolla il link completo" style="width: 100%; padding: 9px 12px; font-family: monospace; font-size: 14px; background: #18181b; border: 1px solid #3f3f46; border-radius: 6px; color: #f4f4f5;">
-        </div>
-        <div class="form-group">
-          <label>Visualizzazione Schermo:</label>
-          <select id="joinScreenView" class="mode-select" style="width: 100%;">
-            <option value="solo" selected>Solo il mio schermo (240x160)</option>
-            <option value="split">Entrambi gli schermi (Split-Screen 480x160)</option>
-          </select>
-        </div>
+.keybindings-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #1a1a1e;
+  border: 1px solid #27272a;
+  border-radius: 12px;
+  padding: 16px 20px;
+  max-width: 960px;
+  width: 100%;
+  font-size: 13px;
+  color: #a1a1aa;
+}
 
-        <button class="primary" id="btnJoinExistingRoom" style="width: 100%; justify-content: center; padding: 10px; margin-top: 8px;">
-          [-&gt;] Entra nella Stanza Online
-        </button>
+.key-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
 
-        <div id="joinStatusArea" style="display: none; margin-top: 16px; padding: 14px; background: #18181b; border: 1px solid #6366f1; border-radius: 8px; text-align: center;">
-          <div class="status-notice" id="joinStatusNotice">Connessione all'Host in corso...</div>
+.key-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #141416;
+  border: 1px solid #27272a;
+  border-radius: 6px;
+  padding: 6px 10px;
+}
 
-          <!-- Fallback manuale -->
-          <details style="margin-top: 14px; font-size: 11px; color: #71717a; text-align: left; cursor: pointer;">
-            <summary>[Opzionale] Risposta manuale offline</summary>
-            <div style="margin-top: 8px;">
-              <textarea id="joinAnswerCode" class="signal-box" readonly rows="2" placeholder="Risposta manuale generata..."></textarea>
-              <button id="btnCopyAnswerCode" style="font-size: 11px; margin-top: 4px; padding: 6px;">[Copia] Risposta Manuale</button>
-            </div>
-          </details>
-        </div>
-      </div>
+kbd {
+  background: #27272a;
+  border: 1px solid #3f3f46;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: monospace;
+  font-size: 12px;
+  color: #fff;
+}
 
-      <!-- Active Netplay Banner (When connected) -->
-      <div id="activeNetplayBanner" style="display: none; margin-top: 16px; padding: 12px; background: #14532d; border: 1px solid #22c55e; border-radius: 8px; text-align: center;">
-        <div style="font-weight: 600; color: #86efac; margin-bottom: 4px;">[CONNESSO] Sessione Cavo Link P2P Attiva</div>
-        <div style="font-size: 12px; color: #dcfce7;" id="activeNetplayDetail">Connesso via WebRTC DataChannel P2P.</div>
-        <button id="btnDisconnectNetplay" style="margin: 8px auto 0; background: #dc2626; border-color: #ef4444; font-size: 12px;">
-          Esci dal Cavo Link
-        </button>
-      </div>
+/* Modal and Link Cable Drawer */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 16px;
+}
 
-    </div>
-  </div>
+.modal-card {
+  background: #18181b;
+  border: 1px solid #3f3f46;
+  border-radius: 16px;
+  width: 100%;
+  max-width: 520px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+  overflow: hidden;
+}
 
-  <!-- Emergency Savestate & Save Conversion Modal -->
-  <div class="modal-backdrop" id="savestateModal" style="display: none;">
-    <div class="modal-card" style="max-width: 580px;">
-      <div class="modal-header">
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 16px; font-weight: bold; color: #a5b4fc;">[#]</span>
-          <h2 id="savestateModalHeaderTitle">Salvataggi di Emergenza &amp; Convertitore .sav</h2>
-        </div>
-        <button class="modal-close" id="btnCloseSavestateModal">[X]</button>
-      </div>
-      <div class="modal-body">
-        <!-- Prominent Recovery Button (Active on Desync / Disconnect) -->
-        <button id="btnEmergencyRecoverAndSave" style="display: none; width: 100%; justify-content: center; padding: 12px; font-weight: bold; background: linear-gradient(135deg, #dc2626, #ea580c); font-size: 14px; margin-bottom: 12px; border-color: #ef4444;">
-          [!] Ripristina Sessione Subito in Singolo
-        </button>
+.modal-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #27272a;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
 
-        <!-- Educational Explanation Card -->
-        <div class="info-card">
-          <div style="font-weight: 600; color: #a5b4fc; margin-bottom: 6px;">[INFO] Come funzionano i salvataggi e come usarli:</div>
-          <p style="font-size: 13px; color: #d4d4d8; line-height: 1.5; margin-bottom: 8px;">
-            <strong>Salvataggio Ufficiale (.sav, 128 KB):</strong> E la memoria standard della cartuccia fisica del GBA, generato quando salvi dal menu interno del gioco (<em>START &rarr; SALVA</em>). E l'unico formato compatibile con mGBA desktop e cartucce fisiche.
-          </p>
-          <p style="font-size: 13px; color: #d4d4d8; line-height: 1.5;">
-            <strong>Savestate di Emergenza (RAM Snapshot, ~390 KB):</strong> E una fotografia istantanea dell'hardware mGBA (registri CPU, RAM video, audio). Viene salvato automaticamente in RAM ogni 2 minuti per recuperare la sessione in caso di crash o caduta di rete, permettendoti di continuare in singolo e salvare dal menu del gioco.
-          </p>
-        </div>
+.modal-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
 
-        <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 14px;">
-          <div style="font-weight: 600; font-size: 13px; color: #f4f4f5;">Azioni Rapide:</div>
-          
-          <button class="primary" id="btnCreateEmergencySavestate" style="width: 100%; justify-content: center; padding: 10px;">
-            [Snap] Cattura Savestate di Emergenza Ora
-          </button>
+.modal-close {
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  color: #a1a1aa;
+  cursor: pointer;
+  padding: 4px 8px;
+}
 
-          <button id="btnRestoreEmergencySavestate" style="width: 100%; justify-content: center; padding: 10px; background: #7c2d12; border-color: #f97316;">
-            [&lt;&lt;] Ripristina da Ultimo Savestate di Emergenza
-          </button>
+.modal-close:hover {
+  color: #fff;
+  background: #27272a;
+}
 
-          <button id="btnConvertSavestateToSav" style="width: 100%; justify-content: center; padding: 10px; background: #065f46; border-color: #10b981;">
-            [&lt;&gt;] Converti Savestate in .sav Standard (128 KB)
-          </button>
+.modal-tabs {
+  display: flex;
+  border-bottom: 1px solid #27272a;
+  background: #141416;
+}
 
-          <input type="file" id="inputSavestateFile" accept=".state,.raw" style="display: none;">
-          <div style="display: flex; gap: 8px; margin-top: 4px;">
-            <button id="btnImportSavestateFile" style="flex: 1; justify-content: center; font-size: 12px; padding: 6px;">[+] Carica Snapshot .state</button>
-            <button id="btnExportSavestateFile" style="flex: 1; justify-content: center; font-size: 12px; padding: 6px;">[-] Scarica Snapshot .state (~390KB)</button>
-          </div>
-        </div>
+.tab-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 12px 16px;
+  font-size: 14px;
+  color: #a1a1aa;
+  justify-content: center;
+}
 
-        <div class="status-notice" id="savestateStatusNotice" style="margin-top: 12px; font-size: 12px; text-align: center;">
-          Ultimo savestate: Nessuno ancora registrato.
-        </div>
-      </div>
-    </div>
-  </div>
+.tab-btn.active {
+  color: #fff;
+  border-bottom-color: #6366f1;
+  background: #18181b;
+}
 
-  <!-- Keybindings & Controls Modal -->
-  <div class="modal-backdrop" id="keybindsModal" style="display: none;">
-    <div class="modal-card" style="max-width: 580px;">
-      <div class="modal-header">
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 16px; font-weight: bold; color: #94a3b8;">[K]</span>
-          <h2>Configurazione Comandi Tastiera</h2>
-        </div>
-        <button class="modal-close" id="btnCloseKeybindsModal">[X]</button>
-      </div>
-      <div class="modal-body">
-        <p style="font-size: 13px; color: #a1a1aa; margin-bottom: 12px;">
-          Personalizza la mappatura dei tasti della tastiera. Clicca sul comando e premi il tasto desiderato.
-        </p>
+.modal-body {
+  padding: 20px;
+}
 
-        <!-- Presets -->
-        <div style="display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap;">
-          <button id="presetRebit" style="font-size: 12px; padding: 4px 8px;">Frecce + Z/X</button>
-          <button id="presetWasd" style="font-size: 12px; padding: 4px 8px;">WASD + J/K</button>
-          <button id="presetNumpad" style="font-size: 12px; padding: 4px 8px;">Tastierino (8456)</button>
-          <button id="presetReset" style="font-size: 12px; padding: 4px 8px; background: #3f3f46;">Default</button>
-        </div>
+.form-group {
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 
-        <!-- Keybind list container -->
-        <div id="keybindContainer" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px;">
-          <!-- Dynamically populated rows -->
-        </div>
-      </div>
-    </div>
-  </div>
+.form-group label {
+  font-size: 12px;
+  color: #d4d4d8;
+  font-weight: 500;
+}
 
-  <script src="app.js"></script>
-</body>
-</html>
+.room-code-display {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  color: #818cf8;
+  font-family: monospace;
+  background: #09090b;
+  border: 2px dashed #6366f1;
+  border-radius: 10px;
+  padding: 12px;
+  margin: 12px 0 6px;
+}
+
+.status-notice {
+  font-size: 13px;
+  color: #e4e4e7;
+  background: #27272a;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-top: 12px;
+}
+
+/* Canvas Overlay for Background Pause & Resync */
+.canvas-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(9, 9, 11, 0.85);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9;
+  animation: fadeIn 0.15s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.overlay-card {
+  position: relative;
+  background: #18181b;
+  border: 1px solid #4f46e5;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7), 0 0 20px rgba(99, 102, 241, 0.2);
+  border-radius: 12px;
+  padding: 24px 32px;
+  text-align: center;
+  max-width: 400px;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.overlay-close-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: #27272a;
+  color: #a1a1aa;
+  border: 1px solid #3f3f46;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-family: monospace;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.overlay-close-btn:hover {
+  background: #dc2626;
+  border-color: #ef4444;
+  color: #fff;
+}
+
+.overlay-card:hover {
+  transform: scale(1.02);
+}
+
+.overlay-icon {
+  font-size: 38px;
+  margin-bottom: 8px;
+}
+
+.overlay-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #f4f4f5;
+  margin-bottom: 4px;
+}
+
+.overlay-subtitle {
+  font-size: 13px;
+  color: #a1a1aa;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.overlay-hint {
+  font-size: 11px;
+  color: #818cf8;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Toggle Checkbox Control */
+.toggle-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #d4d4d8;
+  cursor: pointer;
+  user-select: none;
+  background: #27272a;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  padding: 6px 12px;
+  transition: all 0.15s ease;
+}
+
+.toggle-control:hover {
+  background: #3f3f46;
+  border-color: #52525b;
+}
+
+.toggle-control input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #6366f1;
+}
+
+/* Educational Info Card */
+.info-card {
+  background: #1e1b4b;
+  border: 1px solid #4338ca;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+/* Emergency Session Recovery Button */
+@keyframes emergencyPulse {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+  70% { transform: scale(1.04); box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+.btn-emergency-active {
+  background: linear-gradient(135deg, #dc2626, #ea580c) !important;
+  border-color: #ef4444 !important;
+  color: #fff !important;
+  font-weight: 700 !important;
+  animation: emergencyPulse 1.6s infinite !important;
+}
+
+/* Keybinds UI */
+.keybind-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #141416;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.keybind-label {
+  font-size: 13px;
+  color: #e4e4e7;
+  font-weight: 500;
+}
+
+.keybind-btn {
+  background: #27272a;
+  color: #38bdf8;
+  border: 1px solid #3f3f46;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-family: monospace;
+  font-size: 13px;
+  cursor: pointer;
+  min-width: 60px;
+  text-align: center;
+  transition: all 0.15s ease;
+}
+
+.keybind-btn:hover {
+  background: #3f3f46;
+  border-color: #60a5fa;
+}
+
+.keybind-btn.listening {
+  background: #7c2d12 !important;
+  border-color: #f97316 !important;
+  color: #fdba74 !important;
+  animation: emergencyPulse 1s infinite;
+}
+
+/* In-Game Notification Banner */
+.game-notification {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid #38bdf8;
+  color: #f8fafc;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: center;
+  max-width: 85%;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.7);
+  z-index: 100;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.notification-close-btn {
+  background: transparent;
+  color: #94a3b8;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: monospace;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.notification-close-btn:hover {
+  background: #dc2626;
+  border-color: #ef4444;
+  color: #fff;
+}
+
+
+
+/* Signaling manuale WebRTC (codici invito/risposta) */
+.step-label {
+  font-size: 13px;
+  color: #a1a1aa;
+  margin-bottom: 6px;
+}
+
+.signal-box {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #e4e4e7;
+  background: #18181b;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  padding: 8px 10px;
+  resize: vertical;
+  word-break: break-all;
+}
+
+.signal-box:focus {
+  outline: none;
+  border-color: #818cf8;
+}
+
+/* ==========================================================================
+   Controlli Touch Mobile (Smartphones & Tablets)
+   ========================================================================== */
+
+:root {
+  --touch-scale: 1.0;
+  --touch-opacity: 0.75;
+}
+
+.touch-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 850;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  overflow: hidden;
+}
+
+.touch-widget {
+  position: absolute;
+  pointer-events: auto;
+  opacity: var(--touch-opacity, 0.8);
+  transform-origin: center center;
+  transition: opacity 0.2s ease;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Pulsante Flottante Rapido per Modifica Layout sull'Overlay */
+.touch-floating-edit-btn {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid rgba(99, 102, 241, 0.6);
+  color: #e0e7ff;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: monospace;
+  padding: 5px 12px;
+  border-radius: 20px;
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 950;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.touch-floating-edit-btn:hover,
+.touch-floating-edit-btn:active {
+  background: #4f46e5;
+  border-color: #a5b4fc;
+  color: #ffffff;
+}
+
+.touch-overlay.editing-mode .touch-floating-edit-btn {
+  display: none !important;
+}
+
+/* Posizioni di Default pure CSS per ciascun Widget (evita il raggruppamento in alto a sinistra) */
+.touch-widget[data-touch-id="dpad"] {
+  bottom: 25px;
+  left: 25px;
+}
+
+.touch-widget[data-touch-id="btnL"] {
+  top: 25px;
+  left: 20px;
+}
+
+.touch-widget[data-touch-id="btnR"] {
+  top: 25px;
+  right: 20px;
+}
+
+.touch-widget[data-touch-id="btnB"] {
+  bottom: 35px;
+  right: 95px;
+}
+
+.touch-widget[data-touch-id="btnA"] {
+  bottom: 85px;
+  right: 25px;
+}
+
+.touch-widget[data-touch-id="btnAB"] {
+  bottom: 25px;
+  right: 25px;
+}
+
+.touch-widget[data-touch-id="btnSelect"] {
+  bottom: 22px;
+  left: calc(50% - 95px);
+}
+
+.touch-widget[data-touch-id="btnStart"] {
+  bottom: 22px;
+  left: calc(50% - 25px);
+}
+
+.touch-widget[data-touch-id="btnSpeed"] {
+  bottom: 22px;
+  left: calc(50% + 45px);
+}
+
+.touch-widget.dragging {
+  opacity: 1 !important;
+  z-index: 1001 !important;
+  filter: drop-shadow(0 0 16px rgba(56, 189, 248, 0.8));
+}
+
+.touch-drag-badge {
+  display: none;
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-family: monospace;
+  font-weight: bold;
+  color: #e0e7ff;
+  background: #312e81;
+  border: 1px solid #6366f1;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1002;
+}
+
+.touch-overlay.editing-mode .touch-widget {
+  outline: 2px dashed rgba(129, 140, 248, 0.6);
+  outline-offset: 4px;
+  border-radius: 8px;
+  cursor: grab;
+}
+
+.touch-overlay.editing-mode .touch-widget.selected-widget {
+  outline: 2px solid #38bdf8 !important;
+  outline-offset: 4px;
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.6);
+}
+
+.touch-overlay.editing-mode .touch-drag-badge {
+  display: block;
+}
+
+.touch-overlay.editing-mode .touch-widget.selected-widget .touch-drag-badge {
+  background: #0284c7;
+  border-color: #38bdf8;
+  color: #fff;
+}
+
+/* Edit Toolbar */
+.touch-edit-toolbar {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(24, 24, 27, 0.95);
+  border: 1px solid #6366f1;
+  border-radius: 12px;
+  padding: 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1100;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.85);
+  pointer-events: auto;
+  max-width: 95vw;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.edit-toolbar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.edit-toolbar-title {
+  font-size: 12px;
+  font-weight: bold;
+  color: #c7d2fe;
+}
+
+.edit-selected-badge {
+  font-size: 11px;
+  font-family: monospace;
+  background: #312e81;
+  color: #a5b4fc;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid #4f46e5;
+}
+
+.edit-toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+  font-size: 12px;
+  color: #d4d4d8;
+}
+
+.edit-toolbar-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.edit-toolbar-controls input[type="range"] {
+  width: 85px;
+  cursor: pointer;
+}
+
+.btn-subtle {
+  background: #27272a;
+  color: #d4d4d8;
+  border: 1px solid #3f3f46;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: #065f46;
+  border-color: #10b981;
+  color: #fff;
+  font-weight: bold;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* ========================================================
+   CROCE DIREZIONALE GBA (D-PAD) - Design Autentico & 3D Tilt
+   ======================================================== */
+.touch-widget-dpad {
+  touch-action: none;
+}
+
+.touch-dpad-dish {
+  width: calc(144px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(144px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 50%;
+  background: radial-gradient(circle at 45% 45%, rgba(39, 41, 48, 0.7) 0%, rgba(18, 19, 23, 0.9) 75%);
+  border: 2px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 3px 8px rgba(0, 0, 0, 0.75), 0 6px 16px rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  touch-action: none;
+}
+
+.touch-dpad-cross {
+  width: calc(126px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(126px * var(--widget-scale, var(--touch-scale, 1.0)));
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  perspective: 350px;
+  transform-style: preserve-3d;
+  transition: transform 0.06s ease-out;
+}
+
+/* 3D Rocker Tilt Feedback quando la croce viene premuta */
+.touch-dpad-cross.tilt-up { transform: perspective(350px) rotateX(8deg); }
+.touch-dpad-cross.tilt-down { transform: perspective(350px) rotateX(-8deg); }
+.touch-dpad-cross.tilt-left { transform: perspective(350px) rotateY(-8deg); }
+.touch-dpad-cross.tilt-right { transform: perspective(350px) rotateY(8deg); }
+.touch-dpad-cross.tilt-up-left { transform: perspective(350px) rotateX(6deg) rotateY(-6deg); }
+.touch-dpad-cross.tilt-up-right { transform: perspective(350px) rotateX(6deg) rotateY(6deg); }
+.touch-dpad-cross.tilt-down-left { transform: perspective(350px) rotateX(-6deg) rotateY(-6deg); }
+.touch-dpad-cross.tilt-down-right { transform: perspective(350px) rotateX(-6deg) rotateY(6deg); }
+
+/* Bracci della croce D-Pad */
+.touch-dpad-arm {
+  position: absolute;
+  background: linear-gradient(145deg, #2c2e36 0%, #1c1d22 100%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  touch-action: none;
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.5);
+  transition: background 0.04s ease, border-color 0.04s ease, box-shadow 0.04s ease;
+}
+
+/* Freccia direzionale incisa */
+.touch-dpad-arm .dpad-arrow {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: calc(15px * var(--widget-scale, var(--touch-scale, 1.0)));
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  transition: color 0.04s ease, transform 0.04s ease, text-shadow 0.04s ease;
+}
+
+/* Posizionamento geometrico perfetto dei bracci */
+.dpad-arm-up {
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(42px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 6px 6px 0 0;
+  border-bottom: none;
+}
+
+.dpad-arm-down {
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(42px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 0 0 6px 6px;
+  border-top: none;
+}
+
+.dpad-arm-left {
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: calc(42px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 6px 0 0 6px;
+  border-right: none;
+}
+
+.dpad-arm-right {
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: calc(42px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 0 6px 6px 0;
+  border-left: none;
+}
+
+/* Mozzo centrale e fossetta concava per il pollice */
+.touch-dpad-center-hub {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  background: linear-gradient(145deg, #2a2c33 0%, #1c1d22 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.touch-dpad-dimple {
+  width: calc(24px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(24px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 50%;
+  background: radial-gradient(circle, #121316 35%, #23252a 100%);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.8), 0 1px 1px rgba(255, 255, 255, 0.1);
+}
+
+/* Animazione di Pressione D-Pad: SENZA spostamento visivo, con bagliore incavato e freccia accesa */
+.touch-dpad-arm.active {
+  background: linear-gradient(145deg, #4f46e5 0%, #3730a3 100%) !important;
+  border-color: #818cf8 !important;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.5), 0 0 14px rgba(99, 102, 241, 0.75) !important;
+}
+
+.touch-dpad-arm.active .dpad-arrow {
+  color: #ffffff !important;
+  text-shadow: 0 0 8px #c7d2fe, 0 1px 2px #000000 !important;
+  transform: scale(1.18);
+}
+
+/* ========================================================
+   TASTI SINGOLI GBA (A, B, A+B, L, R, SELECT, START, 2X)
+   ======================================================== */
+.touch-btn {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  transition: transform 0.05s ease, filter 0.05s ease, box-shadow 0.05s ease;
+}
+
+/* Tasto A (Rosso/Rubino GBA) */
+.touch-btn-a {
+  width: calc(56px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(56px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 50%;
+  background: linear-gradient(145deg, #be123c 0%, #881337 100%);
+  border: 2px solid #fda4af;
+  color: #fff;
+  font-size: calc(20px * var(--widget-scale, var(--touch-scale, 1.0)));
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45), inset 0 1px 2px rgba(255, 255, 255, 0.35);
+}
+
+.touch-btn-a:active, .touch-btn-a.active {
+  background: linear-gradient(145deg, #e11d48 0%, #9f1239 100%) !important;
+  border-color: #ffffff !important;
+  box-shadow: 0 0 18px rgba(244, 63, 94, 0.8), inset 0 3px 6px rgba(0, 0, 0, 0.6) !important;
+  transform: scale(0.92);
+}
+
+/* Tasto B (Ambra/Arancio GBA) */
+.touch-btn-b {
+  width: calc(56px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(56px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 50%;
+  background: linear-gradient(145deg, #b45309 0%, #78350f 100%);
+  border: 2px solid #fde68a;
+  color: #fff;
+  font-size: calc(20px * var(--widget-scale, var(--touch-scale, 1.0)));
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45), inset 0 1px 2px rgba(255, 255, 255, 0.35);
+}
+
+.touch-btn-b:active, .touch-btn-b.active {
+  background: linear-gradient(145deg, #d97706 0%, #92400e 100%) !important;
+  border-color: #ffffff !important;
+  box-shadow: 0 0 18px rgba(245, 158, 11, 0.8), inset 0 3px 6px rgba(0, 0, 0, 0.6) !important;
+  transform: scale(0.92);
+}
+
+/* Tasto Combinato A+B */
+.touch-btn-ab {
+  width: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(44px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%);
+  border: 2px solid #c4b5fd;
+  color: #fff;
+  font-size: calc(12px * var(--widget-scale, var(--touch-scale, 1.0)));
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.45), inset 0 1px 2px rgba(255, 255, 255, 0.3);
+}
+
+.touch-btn-ab:active, .touch-btn-ab.active {
+  background: linear-gradient(135deg, #9333ea 0%, #6366f1 100%) !important;
+  border-color: #ffffff !important;
+  box-shadow: 0 0 16px rgba(168, 85, 247, 0.8), inset 0 2px 4px rgba(0, 0, 0, 0.6) !important;
+  transform: scale(0.92);
+}
+
+/* Tasti Dorsali L ed R */
+.touch-btn-shoulder {
+  width: calc(68px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(34px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 8px 8px 14px 14px;
+  background: linear-gradient(180deg, #3f3f46 0%, #27272a 100%);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-top: 2px solid rgba(255, 255, 255, 0.4);
+  color: #f4f4f5;
+  font-size: calc(14px * var(--widget-scale, var(--touch-scale, 1.0)));
+  letter-spacing: 1px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.45);
+}
+
+.touch-btn-shoulder:active, .touch-btn-shoulder.active {
+  background: linear-gradient(180deg, #6366f1 0%, #4338ca 100%) !important;
+  border-color: #a5b4fc !important;
+  box-shadow: 0 0 14px rgba(99, 102, 241, 0.7) !important;
+  transform: scale(0.94);
+}
+
+/* Tasti Menu Pillola (SELECT, START) */
+.touch-btn-pill {
+  width: calc(64px * var(--widget-scale, var(--touch-scale, 1.0)));
+  height: calc(28px * var(--widget-scale, var(--touch-scale, 1.0)));
+  border-radius: 14px;
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #e2e8f0;
+  font-size: calc(10px * var(--widget-scale, var(--touch-scale, 1.0)));
+  letter-spacing: 0.5px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.touch-btn-pill:active, .touch-btn-pill.active {
+  background: #475569 !important;
+  border-color: #cbd5e1 !important;
+  transform: scale(0.94);
+}
+
+/* Tasto Velocita Turbo 2X */
+.touch-btn-speed {
+  width: calc(48px * var(--widget-scale, var(--touch-scale, 1.0)));
+  background: rgba(6, 78, 59, 0.85);
+  border-color: #34d399;
+  color: #a7f3d0;
+  font-size: calc(11px * var(--widget-scale, var(--touch-scale, 1.0)));
+}
+
+.touch-btn-speed:active, .touch-btn-speed.active {
+  background: #059669 !important;
+  border-color: #6ee7b7 !important;
+  color: #ffffff !important;
+  transform: scale(0.94);
+}
+
+/* Mobile Responsive Tweaks */
+@media (max-width: 768px) {
+  header {
+    padding: 8px 12px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .logo-badge {
+    font-size: 11px;
+    padding: 2px 6px;
+  }
+  h1 {
+    font-size: 15px;
+  }
+  .status-bar {
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  main {
+    padding: 8px;
+    gap: 12px;
+  }
+  .screen-container {
+    width: 100%;
+    max-width: 100vw;
+  }
+  #screenCanvas {
+    width: 100% !important;
+    height: auto !important;
+    max-height: 50vh;
+  }
+  .controls-panel {
+    padding: 8px 12px;
+    gap: 8px;
+  }
+  .keybindings-info {
+    display: none;
+  }
+}
