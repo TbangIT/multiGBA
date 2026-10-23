@@ -14,8 +14,8 @@
 (function () {
   "use strict";
 
-  const STORAGE_KEY_LAYOUT = "gba_touch_layout_v3";
-  const STORAGE_KEY_LAYOUT_V2 = "gba_touch_layout_v2"; // compatibilità
+  const STORAGE_KEY_LAYOUT = "gba_touch_layout_v4";
+  const STORAGE_KEY_LAYOUT_V3 = "gba_touch_layout_v3";
   const STORAGE_KEY_ENABLED = "gba_touch_enabled";
 
   // Mappatura bitmask GBA
@@ -70,20 +70,36 @@
 
   let currentLayout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
 
+  // Valida che una coordinata non sia corrotta o impostata a 0,0 in alto a sinistra
+  function isValidPosition(pos) {
+    if (!pos || typeof pos !== "object") return false;
+    const l = String(pos.left || "").trim();
+    const t = String(pos.top || "").trim();
+    if ((l === "0px" || l === "0") && (t === "0px" || t === "0")) {
+      return false;
+    }
+    const hasH = (pos.left && pos.left !== "auto") || (pos.right && pos.right !== "auto");
+    const hasV = (pos.top && pos.top !== "auto") || (pos.bottom && pos.bottom !== "auto");
+    return Boolean(hasH && hasV);
+  }
+
   function loadSavedLayout() {
     try {
       let saved = localStorage.getItem(STORAGE_KEY_LAYOUT);
       if (!saved) {
-        // Controlla versione precedente
-        saved = localStorage.getItem(STORAGE_KEY_LAYOUT_V2);
+        saved = localStorage.getItem(STORAGE_KEY_LAYOUT_V3);
       }
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === "object") {
           currentLayout.scale = parsed.scale || DEFAULT_LAYOUT.scale;
           currentLayout.opacity = parsed.opacity || DEFAULT_LAYOUT.opacity;
-          if (parsed.widgets) {
-            currentLayout.widgets = Object.assign({}, DEFAULT_LAYOUT.widgets, parsed.widgets);
+          if (parsed.widgets && typeof parsed.widgets === "object") {
+            for (const [id, pos] of Object.entries(parsed.widgets)) {
+              if (isValidPosition(pos)) {
+                currentLayout.widgets[id] = pos;
+              }
+            }
           }
         }
       }
@@ -96,7 +112,7 @@
     try {
       const data = JSON.stringify(currentLayout);
       localStorage.setItem(STORAGE_KEY_LAYOUT, data);
-      localStorage.setItem(STORAGE_KEY_LAYOUT_V2, data); // compatibilità
+      localStorage.setItem(STORAGE_KEY_LAYOUT_V3, data);
     } catch (e) {
       console.warn("[Touch] Errore salvataggio layout:", e);
     }
@@ -138,9 +154,12 @@
     updateToolbarSelection();
 
     const widgets = currentLayout.widgets || {};
-    for (const [id, pos] of Object.entries(widgets)) {
+    for (const [id, defaultPos] of Object.entries(DEFAULT_LAYOUT.widgets)) {
       const el = document.querySelector(`.touch-widget[data-touch-id="${id}"]`);
       if (!el) continue;
+
+      const userPos = widgets[id];
+      const pos = (userPos && isValidPosition(userPos)) ? userPos : defaultPos;
 
       el.style.top = pos.top || "auto";
       el.style.bottom = pos.bottom || "auto";
@@ -436,11 +455,12 @@
 
       const onStart = (clientX, clientY) => {
         if (!isEditing) return;
+        const rect = widget.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return;
         dragging = true;
         selectWidget(widgetId);
         startX = clientX;
         startY = clientY;
-        const rect = widget.getBoundingClientRect();
         initialLeft = rect.left;
         initialTop = rect.top;
         widget.style.bottom = "auto";
@@ -474,15 +494,19 @@
         dragging = false;
         widget.classList.remove("dragging");
 
-        if (!currentLayout.widgets[widgetId]) {
-          currentLayout.widgets[widgetId] = {};
-        }
-        currentLayout.widgets[widgetId].left = widget.style.left;
-        currentLayout.widgets[widgetId].top = widget.style.top;
-        currentLayout.widgets[widgetId].bottom = "auto";
-        currentLayout.widgets[widgetId].right = "auto";
+        const lVal = parseFloat(widget.style.left);
+        const tVal = parseFloat(widget.style.top);
+        if (!isNaN(lVal) && !isNaN(tVal) && (lVal > 0 || tVal > 0)) {
+          if (!currentLayout.widgets[widgetId]) {
+            currentLayout.widgets[widgetId] = {};
+          }
+          currentLayout.widgets[widgetId].left = widget.style.left;
+          currentLayout.widgets[widgetId].top = widget.style.top;
+          currentLayout.widgets[widgetId].bottom = "auto";
+          currentLayout.widgets[widgetId].right = "auto";
 
-        saveCurrentLayout();
+          saveCurrentLayout();
+        }
       };
 
       // Mouse
@@ -613,6 +637,7 @@
     const overlay = document.getElementById("touchControlsOverlay");
     const chkTouch = document.getElementById("chkTouchControls");
     const btnEdit = document.getElementById("btnEditTouchLayout");
+    const btnFloatingEdit = document.getElementById("btnFloatingEditLayout");
     const toolbar = document.getElementById("touchEditToolbar");
 
     // Auto-rilevamento dispositivo mobile/touchscreen
@@ -633,9 +658,14 @@
       touchEnabled = enabled;
       localStorage.setItem(STORAGE_KEY_ENABLED, enabled ? "true" : "false");
       if (chkTouch) chkTouch.checked = enabled;
+      if (btnEdit) {
+        btnEdit.style.display = enabled ? "inline-flex" : "none";
+      }
       if (overlay) {
         overlay.style.display = enabled ? "block" : "none";
-        if (!enabled && isEditing) {
+        if (enabled) {
+          applyLayoutToDom();
+        } else if (isEditing) {
           isEditing = false;
           unselectAllWidgets();
           overlay.classList.remove("editing-mode");
@@ -643,6 +673,18 @@
         }
       }
     }
+
+    const toggleEditMode = () => {
+      if (!touchEnabled) {
+        setTouchEnabled(true);
+      }
+      isEditing = !isEditing;
+      if (overlay) overlay.classList.toggle("editing-mode", isEditing);
+      if (toolbar) toolbar.style.display = isEditing ? "flex" : "none";
+      if (isEditing) {
+        unselectAllWidgets();
+      }
+    };
 
     if (chkTouch) {
       chkTouch.checked = touchEnabled;
@@ -652,17 +694,11 @@
     }
 
     if (btnEdit) {
-      btnEdit.addEventListener("click", () => {
-        if (!touchEnabled) {
-          setTouchEnabled(true);
-        }
-        isEditing = !isEditing;
-        if (overlay) overlay.classList.toggle("editing-mode", isEditing);
-        if (toolbar) toolbar.style.display = isEditing ? "flex" : "none";
-        if (isEditing) {
-          unselectAllWidgets();
-        }
-      });
+      btnEdit.addEventListener("click", toggleEditMode);
+    }
+
+    if (btnFloatingEdit) {
+      btnFloatingEdit.addEventListener("click", toggleEditMode);
     }
 
     setTouchEnabled(touchEnabled);
