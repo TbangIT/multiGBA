@@ -8,6 +8,7 @@
   <script src="peerjs.min.js"></script>
   <script src="p2p-link.js"></script>
   <script src="cores/mgba_dual.js"></script>
+  <script src="touch-controls.js"></script>
 </head>
 <body>
   <header>
@@ -98,6 +99,17 @@
 
       <div style="height: 24px; width: 1px; background: #3f3f46; margin: 0 4px;"></div>
 
+      <!-- Touch Controls Toggle -->
+      <label class="toggle-control" id="lblTouchControlsToggle" title="Mostra/Nascondi i pulsanti touch su schermo (utile per smartphone e tablet)">
+        <input type="checkbox" id="chkTouchControls">
+        <span>[T] Controlli Touch</span>
+      </label>
+      <button id="btnEditTouchLayout" style="font-size: 12px; padding: 4px 8px; display: none; background: #374151;">
+        [Sposta/Ridimensiona]
+      </button>
+
+      <div style="height: 24px; width: 1px; background: #3f3f46; margin: 0 4px;"></div>
+
       <!-- Debug Toggle: Pause on Background -->
       <label class="toggle-control" id="lblPauseOnBackground" title="Pausa la simulazione quando la finestra perde il focus (utile per debug)">
         <input type="checkbox" id="chkPauseOnBackground">
@@ -119,6 +131,67 @@
       </div>
     </div>
   </main>
+
+  <!-- Touch Controls Overlay (Smartphones & Tablets) -->
+  <div id="touchControlsOverlay" class="touch-overlay" style="display: none;">
+    <!-- Edit Toolbar (active during layout modification) -->
+    <div id="touchEditToolbar" class="touch-edit-toolbar" style="display: none;">
+      <div class="edit-toolbar-title">[EDIT LAYOUT] Trascina i blocchi per posizionarli</div>
+      <div class="edit-toolbar-controls">
+        <label>
+          Scala:
+          <input type="range" id="touchSizeSlider" min="0.7" max="1.5" step="0.05" value="1.0">
+          <span id="touchSizeLabel">100%</span>
+        </label>
+        <label>
+          Trasparenza:
+          <input type="range" id="touchOpacitySlider" min="0.3" max="1.0" step="0.05" value="0.75">
+          <span id="touchOpacityLabel">75%</span>
+        </label>
+        <button id="btnResetTouchLayout" class="btn-subtle">[↺] Reset</button>
+        <button id="btnCloseTouchEdit" class="btn-primary">[OK] Fatto</button>
+      </div>
+    </div>
+
+    <!-- Cluster Shoulders (L & R) -->
+    <div id="clusterShoulders" class="touch-cluster" data-cluster="shoulders">
+      <div class="touch-drag-handle">[L/R]</div>
+      <button class="touch-btn touch-btn-shoulder" id="btnTouchL" data-key="L">L</button>
+      <button class="touch-btn touch-btn-shoulder" id="btnTouchR" data-key="R">R</button>
+    </div>
+
+    <!-- Cluster D-Pad -->
+    <div id="clusterDpad" class="touch-cluster" data-cluster="dpad">
+      <div class="touch-drag-handle">[D-PAD]</div>
+      <div class="touch-dpad-base" id="touchDpadBase">
+        <button class="touch-btn touch-dpad-btn touch-dpad-up" id="btnTouchUp" data-key="UP">&uarr;</button>
+        <button class="touch-btn touch-dpad-btn touch-dpad-left" id="btnTouchLeft" data-key="LEFT">&larr;</button>
+        <div class="touch-dpad-center"></div>
+        <button class="touch-btn touch-dpad-btn touch-dpad-right" id="btnTouchRight" data-key="RIGHT">&rarr;</button>
+        <button class="touch-btn touch-dpad-btn touch-dpad-down" id="btnTouchDown" data-key="DOWN">&darr;</button>
+      </div>
+    </div>
+
+    <!-- Cluster Menu (Select, Start, 2x) -->
+    <div id="clusterMenu" class="touch-cluster" data-cluster="menu">
+      <div class="touch-drag-handle">[MENU]</div>
+      <div class="touch-menu-row">
+        <button class="touch-btn touch-btn-pill" id="btnTouchSelect" data-key="SELECT">SELECT</button>
+        <button class="touch-btn touch-btn-pill" id="btnTouchSpeed" data-key="SPEED">2X</button>
+        <button class="touch-btn touch-btn-pill" id="btnTouchStart" data-key="START">START</button>
+      </div>
+    </div>
+
+    <!-- Cluster Actions (B, A, A+B) -->
+    <div id="clusterActions" class="touch-cluster" data-cluster="actions">
+      <div class="touch-drag-handle">[A/B]</div>
+      <div class="touch-actions-group">
+        <button class="touch-btn touch-btn-round touch-btn-b" id="btnTouchB" data-key="B">B</button>
+        <button class="touch-btn touch-btn-round touch-btn-ab" id="btnTouchAB" data-key="AB" title="Premi A e B contemporaneamente">A+B</button>
+        <button class="touch-btn touch-btn-round touch-btn-a" id="btnTouchA" data-key="A">A</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Rebit-Style Link Cable Online Modal (WebRTC P2P Edition) -->
   <div class="modal-backdrop" id="netplayModal" style="display: none;">
