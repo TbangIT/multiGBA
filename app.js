@@ -29,6 +29,24 @@ const KEY_DOWN = 1 << 7;
 const KEY_R = 1 << 8;
 const KEY_L = 1 << 9;
 
+window.GBA_KEYS = { KEY_A, KEY_B, KEY_SELECT, KEY_START, KEY_RIGHT, KEY_LEFT, KEY_UP, KEY_DOWN, KEY_R, KEY_L };
+
+window.setTouchButton = function(mask, isDown) {
+  if (isDown) {
+    currentKeys |= mask;
+  } else {
+    currentKeys &= ~mask;
+  }
+};
+
+window.toggleTouchSpeed = function() {
+  const newSpeed = roomSpeed === 1 ? 2 : 1;
+  setSpeed(newSpeed);
+  if (activeP2PConn && activeP2PConn.open) {
+    try { activeP2PConn.send({ type: "change_speed", speed: newSpeed }); } catch(e) {}
+  }
+};
+
 const GBA_BUTTONS = [
   { id: "UP", label: "D-Pad Su", mask: KEY_UP, defaultKey: "ArrowUp" },
   { id: "DOWN", label: "D-Pad Giu", mask: KEY_DOWN, defaultKey: "ArrowDown" },
@@ -2243,6 +2261,7 @@ window.gbaDebug = {
   getRoomCode: () => currentRoomCode,
   getPeer: () => peer,
   getActiveConn: () => activeP2PConn,
+  getCurrentKeys: () => currentKeys,
 };
 
 window.addEventListener("load", initCore);
