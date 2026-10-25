@@ -293,34 +293,50 @@ let audioRingWritePtr = 0;
 let audioRingReadPtr = 0;
 let audioSamplesInRing = 0;
 let audioResampleFrac = 0.0;
+let isAudioBuffering = true;
 
 function handleAudioProcess(e) {
   const outL = e.outputBuffer.getChannelData(0);
   const outR = e.outputBuffer.getChannelData(1);
   const bufferLen = outL.length;
 
-  if (!audioEnabled || !isRunning || audioSamplesInRing < 128) {
+  if (!audioEnabled || !isRunning) {
     outL.fill(0);
     outR.fill(0);
     return;
   }
 
-  // Linear resampling: GBA produces audio at 44100 Hz.
-  // Output device runs at audioCtx.sampleRate (typically 48000 Hz or 44100 Hz).
-  // In 2x speed mode, double the consumption rate.
-  const baseRate = 44100 / audioCtx.sampleRate;
-  const speedMult = (roomSpeed === 2 ? 2.0 : 1.0);
-
-  // Dynamic Drift Correction:
-  // Target ring buffer level: ~3000 to 5000 frames (~70ms - 110ms)
-  let driftAdjustment = 1.0;
-  if (audioSamplesInRing > 7000) {
-    driftAdjustment = 1.025; // buffer filling up -> consume 2.5% faster
-  } else if (audioSamplesInRing < 2000) {
-    driftAdjustment = 0.975; // buffer starving -> consume 2.5% slower
+  // Pre-buffering guard: wait until buffer reaches ~1500 samples before outputting
+  if (isAudioBuffering) {
+    if (audioSamplesInRing < 1500) {
+      outL.fill(0);
+      outR.fill(0);
+      return;
+    }
+    isAudioBuffering = false;
   }
 
-  const stepRate = baseRate * speedMult * driftAdjustment;
+  // Underflow guard: if buffer is exhausted, briefly re-buffer to prevent perpetual crackling
+  if (audioSamplesInRing < 64) {
+    isAudioBuffering = true;
+    outL.fill(0);
+    outR.fill(0);
+    return;
+  }
+
+  // CRITICAL FIX: Query the core's REAL sample rate (32768 Hz in mGBA), NOT 44100 Hz!
+  const coreRate = (window.Module && typeof window.Module._mgba_demo_audio_sample_rate === "function")
+    ? (window.Module._mgba_demo_audio_sample_rate() || 32768)
+    : 32768;
+  const baseRate = coreRate / audioCtx.sampleRate;
+  const speedMult = (roomSpeed === 2 ? 2.0 : 1.0);
+
+  // Smooth proportional dynamic drift: maintains target ~2000 samples (~60ms) without audible pitch shift
+  const targetBuffer = 2000;
+  const diff = audioSamplesInRing - targetBuffer;
+  const driftFactor = Math.max(0.93, Math.min(1.07, 1.0 + diff * 0.000035));
+
+  const stepRate = baseRate * speedMult * driftFactor;
 
   for (let i = 0; i < bufferLen; i++) {
     if (audioSamplesInRing <= 2) {
@@ -770,6 +786,20 @@ function startSinglePlayer(sramBytes) {
   canvas.style.height = "480px";
   modeBadge.innerText = "Modalita: Singolo (P1)";
   currentMode = "solo";
+  setScreenView("solo");
+  if (btnToggleScreenView) btnToggleScreenView.style.display = "none";
+  if (modeSelect) modeSelect.value = "solo";
+
+  if (window.Module && typeof window.Module._mgba_demo_audio_clear === "function") {
+    try {
+      window.Module._mgba_demo_audio_clear(0);
+      window.Module._mgba_demo_audio_clear(1);
+    } catch(e) {}
+  }
+  audioRingWritePtr = 0;
+  audioRingReadPtr = 0;
+  audioSamplesInRing = 0;
+  isAudioBuffering = true;
 
   const res = window.Module._mgba_demo_load_game_multi(
     rom1Ptr, romSize,
@@ -806,6 +836,19 @@ function startDualScreenCoop() {
   canvas.style.height = "320px";
   modeBadge.innerText = "Modalita: Dual Co-Op Link (P1 + P2)";
   currentMode = "dual";
+  setScreenView("split");
+  if (btnToggleScreenView) btnToggleScreenView.style.display = "inline-flex";
+
+  if (window.Module && typeof window.Module._mgba_demo_audio_clear === "function") {
+    try {
+      window.Module._mgba_demo_audio_clear(0);
+      window.Module._mgba_demo_audio_clear(1);
+    } catch(e) {}
+  }
+  audioRingWritePtr = 0;
+  audioRingReadPtr = 0;
+  audioSamplesInRing = 0;
+  isAudioBuffering = true;
 
   const res = window.Module._mgba_demo_load_game_multi(
     rom1Ptr, romSize,
@@ -840,22 +883,23 @@ function startNetplayMultiCore(hostSramBytes, guestSramBytes, localPlayerId, vie
   window.Module.HEAPU8.set(hostSave, sram1Ptr);
   window.Module.HEAPU8.set(guestSave, sram2Ptr);
 
-  netplayViewMode = viewMode;
-  if (viewMode === "split") {
-    canvas.width = GBA_WIDTH * 2;
-    canvas.height = GBA_HEIGHT;
-    canvas.style.width = "960px";
-    canvas.style.height = "320px";
-  } else {
-    canvas.width = GBA_WIDTH;
-    canvas.height = GBA_HEIGHT;
-    canvas.style.width = "720px";
-    canvas.style.height = "480px";
-  }
-
   currentMode = "netplay";
   myPlayerId = localPlayerId;
   remotePlayerId = localPlayerId === 1 ? 2 : 1;
+
+  if (btnToggleScreenView) btnToggleScreenView.style.display = "inline-flex";
+  setScreenView(viewMode || "solo");
+
+  if (window.Module && typeof window.Module._mgba_demo_audio_clear === "function") {
+    try {
+      window.Module._mgba_demo_audio_clear(0);
+      window.Module._mgba_demo_audio_clear(1);
+    } catch(e) {}
+  }
+  audioRingWritePtr = 0;
+  audioRingReadPtr = 0;
+  audioSamplesInRing = 0;
+  isAudioBuffering = true;
 
   modeBadge.innerText = `Online: P${myPlayerId} (${netplayRoomSpeed}x Speed - P2P)`;
   modeBadge.className = "badge active";
@@ -1024,14 +1068,17 @@ function runSingleSimulationFrame() {
   // 3. Audio Stream to Ring Buffer
   if (audioEnabled && audioCtx) {
     const activeAudioIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
-    const avail = window.Module._mgba_demo_audio_available(activeAudioIdx);
-    if (avail > 0) {
-      const readCount = window.Module._mgba_demo_audio_read(activeAudioIdx, Math.min(avail, 4096));
+    while (true) {
+      const avail = window.Module._mgba_demo_audio_available(activeAudioIdx);
+      if (avail <= 0) break;
+      const toRead = Math.min(avail, 2048);
+      const readCount = window.Module._mgba_demo_audio_read(activeAudioIdx, toRead);
+      if (readCount <= 0) break;
       const audioBufPtr = window.Module._mgba_demo_audio_buffer();
-      if (audioBufPtr && readCount > 0) {
-        const pcm16 = new Int16Array(window.Module.HEAP16.buffer, audioBufPtr, readCount * 2);
-        queueAudioPcm(pcm16, readCount);
-      }
+      if (!audioBufPtr) break;
+      const pcm16 = new Int16Array(window.Module.HEAP16.buffer, audioBufPtr, readCount * 2);
+      queueAudioPcm(pcm16, readCount);
+      if (avail <= toRead) break;
     }
   }
 
@@ -2499,24 +2546,39 @@ modeSelect.addEventListener("change", (e) => {
 const btnToggleScreenView = document.getElementById("btnToggleScreenView");
 
 function setScreenView(view) {
+  // If playing alone in single player, ALWAYS enforce single screen view!
+  if (currentMode === "solo") {
+    view = "solo";
+  }
   netplayViewMode = view;
   if (view === "split") {
     canvas.width = GBA_WIDTH * 2;
     canvas.height = GBA_HEIGHT;
     canvas.style.width = "960px";
     canvas.style.height = "320px";
-    if (btnToggleScreenView) btnToggleScreenView.innerText = "[O] Vista: Split-Screen";
+    if (btnToggleScreenView) {
+      btnToggleScreenView.innerText = "[O] Vista: Split-Screen";
+      btnToggleScreenView.style.display = currentMode === "solo" ? "none" : "inline-flex";
+    }
   } else {
     canvas.width = GBA_WIDTH;
     canvas.height = GBA_HEIGHT;
     canvas.style.width = "720px";
     canvas.style.height = "480px";
-    if (btnToggleScreenView) btnToggleScreenView.innerText = "[O] Vista: Singolo";
+    if (btnToggleScreenView) {
+      btnToggleScreenView.innerText = "[O] Vista: Singolo";
+      btnToggleScreenView.style.display = currentMode === "solo" ? "none" : "inline-flex";
+    }
   }
 }
 
 if (btnToggleScreenView) {
   btnToggleScreenView.addEventListener("click", () => {
+    if (currentMode === "solo") {
+      setScreenView("solo");
+      btnToggleScreenView.style.display = "none";
+      return;
+    }
     const nextView = netplayViewMode === "solo" ? "split" : "solo";
     setScreenView(nextView);
   });
