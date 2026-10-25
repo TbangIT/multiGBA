@@ -48,53 +48,74 @@ window.toggleTouchSpeed = function() {
 };
 
 const GBA_BUTTONS = [
-  { id: "UP", label: "D-Pad Su", mask: KEY_UP, defaultKey: "ArrowUp" },
-  { id: "DOWN", label: "D-Pad Giu", mask: KEY_DOWN, defaultKey: "ArrowDown" },
-  { id: "LEFT", label: "D-Pad Sinistra", mask: KEY_LEFT, defaultKey: "ArrowLeft" },
-  { id: "RIGHT", label: "D-Pad Destra", mask: KEY_RIGHT, defaultKey: "ArrowRight" },
-  { id: "A", label: "Pulsante A (Conferma)", mask: KEY_A, defaultKey: "KeyZ" },
-  { id: "B", label: "Pulsante B (Annulla)", mask: KEY_B, defaultKey: "KeyX" },
-  { id: "START", label: "Pulsante START", mask: KEY_START, defaultKey: "Enter" },
-  { id: "SELECT", label: "Pulsante SELECT", mask: KEY_SELECT, defaultKey: "ShiftRight" },
-  { id: "L", label: "Dorsale L", mask: KEY_L, defaultKey: "KeyA" },
-  { id: "R", label: "Dorsale R", mask: KEY_R, defaultKey: "KeyS" },
-  { id: "SPEED", label: "Velocita 2x (Fast Forward)", mask: 0, defaultKey: "Space" },
+  { id: "UP", label: "D-Pad Su", mask: KEY_UP, defaultPrimary: "ArrowUp", defaultSecondary: "KeyW" },
+  { id: "DOWN", label: "D-Pad Giu", mask: KEY_DOWN, defaultPrimary: "ArrowDown", defaultSecondary: "KeyS" },
+  { id: "LEFT", label: "D-Pad Sinistra", mask: KEY_LEFT, defaultPrimary: "ArrowLeft", defaultSecondary: "KeyA" },
+  { id: "RIGHT", label: "D-Pad Destra", mask: KEY_RIGHT, defaultPrimary: "ArrowRight", defaultSecondary: "KeyD" },
+  { id: "A", label: "Pulsante A (Conferma)", mask: KEY_A, defaultPrimary: "KeyZ", defaultSecondary: "KeyJ" },
+  { id: "B", label: "Pulsante B (Annulla)", mask: KEY_B, defaultPrimary: "KeyX", defaultSecondary: "KeyK" },
+  { id: "START", label: "Pulsante START", mask: KEY_START, defaultPrimary: "Enter", defaultSecondary: "KeyM" },
+  { id: "SELECT", label: "Pulsante SELECT", mask: KEY_SELECT, defaultPrimary: "ShiftRight", defaultSecondary: "ShiftLeft" },
+  { id: "L", label: "Dorsale L", mask: KEY_L, defaultPrimary: "KeyQ", defaultSecondary: "KeyU" },
+  { id: "R", label: "Dorsale R", mask: KEY_R, defaultPrimary: "KeyE", defaultSecondary: "KeyI" },
+  { id: "SPEED", label: "Velocita 2x (Fast Forward)", mask: 0, defaultPrimary: "Space", defaultSecondary: "Tab" },
 ];
 
 let userKeybinds = {};
 try {
-  const storedBinds = localStorage.getItem("gba_custom_keybinds_v2");
-  if (storedBinds) userKeybinds = JSON.parse(storedBinds);
+  const storedBindsV3 = localStorage.getItem("gba_custom_keybinds_v3");
+  if (storedBindsV3) {
+    userKeybinds = JSON.parse(storedBindsV3);
+  } else {
+    const storedBindsV2 = localStorage.getItem("gba_custom_keybinds_v2");
+    if (storedBindsV2) {
+      const v2 = JSON.parse(storedBindsV2);
+      GBA_BUTTONS.forEach((b) => {
+        userKeybinds[b.id] = {
+          primary: v2[b.id] || b.defaultPrimary,
+          secondary: b.defaultSecondary
+        };
+      });
+    }
+  }
 } catch (e) {
   console.warn("Could not load custom keybinds", e);
 }
 
+// Ensure every button has a primary and secondary slot defined
 GBA_BUTTONS.forEach((b) => {
-  if (!userKeybinds[b.id]) {
-    userKeybinds[b.id] = b.defaultKey;
+  if (!userKeybinds[b.id] || typeof userKeybinds[b.id] !== "object") {
+    userKeybinds[b.id] = {
+      primary: b.defaultPrimary,
+      secondary: b.defaultSecondary
+    };
+  } else {
+    if (userKeybinds[b.id].primary === undefined) userKeybinds[b.id].primary = b.defaultPrimary;
+    if (userKeybinds[b.id].secondary === undefined) userKeybinds[b.id].secondary = b.defaultSecondary;
   }
 });
 
 let codeToMask = {};
-let speedKey = userKeybinds.SPEED || "Space";
+let speedKeys = new Set();
 
 function rebuildKeyLookup() {
   codeToMask = {};
-  speedKey = userKeybinds.SPEED || "Space";
+  speedKeys = new Set();
   GBA_BUTTONS.forEach((b) => {
-    if (b.mask > 0 && userKeybinds[b.id]) {
-      codeToMask[userKeybinds[b.id]] = b.mask;
+    const bind = userKeybinds[b.id];
+    if (!bind) return;
+    if (b.mask > 0) {
+      if (bind.primary) codeToMask[bind.primary] = (codeToMask[bind.primary] || 0) | b.mask;
+      if (bind.secondary) codeToMask[bind.secondary] = (codeToMask[bind.secondary] || 0) | b.mask;
+    } else if (b.id === "SPEED") {
+      if (bind.primary) speedKeys.add(bind.primary);
+      if (bind.secondary) speedKeys.add(bind.secondary);
     }
   });
-  // Secondary fallbacks for common keys
-  if (!codeToMask["KeyJ"]) codeToMask["KeyJ"] = KEY_A;
-  if (!codeToMask["KeyK"]) codeToMask["KeyK"] = KEY_B;
-  if (!codeToMask["ShiftLeft"]) codeToMask["ShiftLeft"] = KEY_SELECT;
-  if (!codeToMask["Backspace"]) codeToMask["Backspace"] = KEY_SELECT;
 }
 rebuildKeyLookup();
 
-let listeningButtonId = null;
+let listeningTarget = null; // { buttonId: string, slot: "primary" | "secondary" }
 
 let inGameNoticeTimeout = null;
 function showInGameNotice(text, durationMs = 6000) {
@@ -260,20 +281,146 @@ if (btnCloseOverlay) {
   });
 }
 
-// Audio setup
+// High-Fidelity Audio Ring Buffer & Resampler Pipeline
 let audioCtx = null;
+let audioProcessor = null;
 let audioEnabled = true;
-let audioNextTime = 0;
+
+const AUDIO_RING_CAPACITY = 32768; // Stereo frames (~740 ms buffer capacity)
+const audioRingL = new Float32Array(AUDIO_RING_CAPACITY);
+const audioRingR = new Float32Array(AUDIO_RING_CAPACITY);
+let audioRingWritePtr = 0;
+let audioRingReadPtr = 0;
+let audioSamplesInRing = 0;
+let audioResampleFrac = 0.0;
+
+function handleAudioProcess(e) {
+  const outL = e.outputBuffer.getChannelData(0);
+  const outR = e.outputBuffer.getChannelData(1);
+  const bufferLen = outL.length;
+
+  if (!audioEnabled || !isRunning || audioSamplesInRing < 128) {
+    outL.fill(0);
+    outR.fill(0);
+    return;
+  }
+
+  // Linear resampling: GBA produces audio at 44100 Hz.
+  // Output device runs at audioCtx.sampleRate (typically 48000 Hz or 44100 Hz).
+  // In 2x speed mode, double the consumption rate.
+  const baseRate = 44100 / audioCtx.sampleRate;
+  const speedMult = (roomSpeed === 2 ? 2.0 : 1.0);
+
+  // Dynamic Drift Correction:
+  // Target ring buffer level: ~3000 to 5000 frames (~70ms - 110ms)
+  let driftAdjustment = 1.0;
+  if (audioSamplesInRing > 7000) {
+    driftAdjustment = 1.025; // buffer filling up -> consume 2.5% faster
+  } else if (audioSamplesInRing < 2000) {
+    driftAdjustment = 0.975; // buffer starving -> consume 2.5% slower
+  }
+
+  const stepRate = baseRate * speedMult * driftAdjustment;
+
+  for (let i = 0; i < bufferLen; i++) {
+    if (audioSamplesInRing <= 2) {
+      outL[i] = 0;
+      outR[i] = 0;
+      continue;
+    }
+
+    const currIdx = audioRingReadPtr;
+    const nextIdx = (audioRingReadPtr + 1) % AUDIO_RING_CAPACITY;
+
+    const s0L = audioRingL[currIdx];
+    const s1L = audioRingL[nextIdx];
+    const s0R = audioRingR[currIdx];
+    const s1R = audioRingR[nextIdx];
+
+    // Linear interpolation
+    outL[i] = s0L + audioResampleFrac * (s1L - s0L);
+    outR[i] = s0R + audioResampleFrac * (s1R - s0R);
+
+    audioResampleFrac += stepRate;
+    const wholeFrames = Math.floor(audioResampleFrac);
+    if (wholeFrames > 0) {
+      audioResampleFrac -= wholeFrames;
+      const consumed = Math.min(wholeFrames, audioSamplesInRing);
+      audioRingReadPtr = (audioRingReadPtr + consumed) % AUDIO_RING_CAPACITY;
+      audioSamplesInRing -= consumed;
+    }
+  }
+}
 
 function initAudio() {
   if (!audioCtx) {
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    audioCtx = new AudioContext({ sampleRate: 44100 });
-    audioNextTime = audioCtx.currentTime;
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    audioCtx = new AudioContextClass();
+    try {
+      audioProcessor = audioCtx.createScriptProcessor(2048, 0, 2);
+      audioProcessor.onaudioprocess = handleAudioProcess;
+      audioProcessor.connect(audioCtx.destination);
+    } catch (err) {
+      console.warn("Failed to create ScriptProcessorNode:", err);
+    }
   }
-  if (audioCtx.state === "suspended") {
+  if (audioCtx && audioCtx.state === "suspended") {
     audioCtx.resume();
   }
+}
+
+function queueAudioPcm(pcm16, numFrames) {
+  if (!audioEnabled || numFrames <= 0) return;
+  if (audioSamplesInRing + numFrames > AUDIO_RING_CAPACITY) {
+    const overflow = (audioSamplesInRing + numFrames) - AUDIO_RING_CAPACITY;
+    audioRingReadPtr = (audioRingReadPtr + overflow) % AUDIO_RING_CAPACITY;
+    audioSamplesInRing -= overflow;
+  }
+
+  for (let i = 0; i < numFrames; i++) {
+    audioRingL[audioRingWritePtr] = pcm16[i * 2] / 32768.0;
+    audioRingR[audioRingWritePtr] = pcm16[i * 2 + 1] / 32768.0;
+    audioRingWritePtr = (audioRingWritePtr + 1) % AUDIO_RING_CAPACITY;
+  }
+  audioSamplesInRing += numFrames;
+}
+
+window.addEventListener("pointerdown", () => initAudio(), { passive: true, once: false });
+
+// Modal and Input Detection Guards
+function isAnyModalOpen() {
+  const m1 = document.getElementById("netplayModal");
+  const m2 = document.getElementById("savestateModal");
+  const m3 = document.getElementById("keybindsModal");
+  const m4 = document.getElementById("manualExchangeModal");
+  return (m1 && m1.style.display !== "none" && m1.offsetParent !== null) ||
+         (m2 && m2.style.display !== "none" && m2.offsetParent !== null) ||
+         (m3 && m3.style.display !== "none" && m3.offsetParent !== null) ||
+         (m4 && m4.style.display !== "none" && m4.offsetParent !== null);
+}
+
+function isInputField(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+}
+
+function openModal(modalEl) {
+  if (!modalEl) return;
+  currentKeys = 0;
+  p2Keys = 0;
+  modalEl.style.display = "flex";
+}
+
+function closeModal(modalEl) {
+  if (!modalEl) return;
+  modalEl.style.display = "none";
+  currentKeys = 0;
+  p2Keys = 0;
+  listeningTarget = null;
+  const c = document.getElementById("screenCanvas");
+  if (c) c.focus();
 }
 
 // Keyboard input listeners
@@ -296,13 +443,30 @@ const P2_KEY_MAPPINGS = {
 };
 
 window.addEventListener("keydown", (e) => {
-  if (listeningButtonId) {
+  if (listeningTarget) {
     e.preventDefault();
-    userKeybinds[listeningButtonId] = e.code;
-    localStorage.setItem("gba_custom_keybinds_v2", JSON.stringify(userKeybinds));
+    e.stopPropagation();
+    const { buttonId, slot } = listeningTarget;
+    if (e.code === "Escape") {
+      listeningTarget = null;
+      renderKeybindsUI();
+      return;
+    }
+    userKeybinds[buttonId][slot] = e.code;
+    localStorage.setItem("gba_custom_keybinds_v3", JSON.stringify(userKeybinds));
     rebuildKeyLookup();
-    listeningButtonId = null;
+    listeningTarget = null;
     renderKeybindsUI();
+    return;
+  }
+
+  if (isInputField(e.target)) {
+    return;
+  }
+
+  if (isAnyModalOpen()) {
+    currentKeys = 0;
+    p2Keys = 0;
     return;
   }
 
@@ -314,7 +478,7 @@ window.addEventListener("keydown", (e) => {
     p2Keys |= P2_KEY_MAPPINGS[e.code];
     e.preventDefault();
   }
-  if (e.code === speedKey) {
+  if (speedKeys.has(e.code)) {
     setSpeed(2); // Fast forward
     e.preventDefault();
   }
@@ -322,6 +486,18 @@ window.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("keyup", (e) => {
+  if (listeningTarget) return;
+
+  if (isInputField(e.target)) {
+    return;
+  }
+
+  if (isAnyModalOpen()) {
+    currentKeys = 0;
+    p2Keys = 0;
+    return;
+  }
+
   if (e.code in codeToMask) {
     currentKeys &= ~codeToMask[e.code];
     e.preventDefault();
@@ -330,7 +506,7 @@ window.addEventListener("keyup", (e) => {
     p2Keys &= ~P2_KEY_MAPPINGS[e.code];
     e.preventDefault();
   }
-  if (e.code === speedKey) {
+  if (speedKeys.has(e.code)) {
     setSpeed(1);
     e.preventDefault();
   }
@@ -400,20 +576,84 @@ function base64ToUint8(base64) {
   return bytes;
 }
 
-// Save Management
-function loadSavedSram() {
+// Browser-Persistent .sav Storage Management (per-game in localStorage)
+function getSramStorageKey(romBase) {
+  const base = romBase || loadedRomBaseName || "default_gba";
+  const sanitized = base.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase();
+  return `gba_sav_${sanitized}`;
+}
+
+function saveSramToBrowserStorage(romBase, bytes) {
+  if (!bytes || bytes.length === 0) return false;
   try {
-    const stored = localStorage.getItem("pokemon_quetzal_sram");
+    const key = getSramStorageKey(romBase);
+    const b64 = uint8ToBase64(bytes);
+    localStorage.setItem(key, b64);
+    localStorage.setItem("gba_sav_last_active_key", key);
+    localStorage.setItem("gba_sav_last_active_rom", loadedRomName);
+    localStorage.setItem("gba_sav_last_active_time", Date.now().toString());
+
+    let index = {};
+    try {
+      const storedIdx = localStorage.getItem("gba_saves_index");
+      if (storedIdx) index = JSON.parse(storedIdx);
+    } catch (e) {}
+    index[key] = {
+      romName: loadedRomName,
+      romBaseName: loadedRomBaseName,
+      size: bytes.length,
+      updatedAt: new Date().toISOString()
+    };
+    localStorage.setItem("gba_saves_index", JSON.stringify(index));
+    return true;
+  } catch (err) {
+    console.warn("Could not save SRAM to browser storage", err);
+    return false;
+  }
+}
+
+function loadSramFromBrowserStorage(romBase) {
+  try {
+    const key = getSramStorageKey(romBase);
+    const stored = localStorage.getItem(key);
     if (stored) {
       const bytes = base64ToUint8(stored);
-      if (bytes.length === SRAM_SIZE) {
-        saveBadge.innerText = "Salvataggio: Locale (128 KB)";
+      if (bytes && bytes.length === SRAM_SIZE) {
+        return bytes;
+      }
+    }
+    const legacy = localStorage.getItem("pokemon_quetzal_sram");
+    if (legacy) {
+      const bytes = base64ToUint8(legacy);
+      if (bytes && bytes.length === SRAM_SIZE) {
         return bytes;
       }
     }
   } catch (err) {
-    console.warn("Could not load save from localStorage", err);
+    console.warn("Could not load SRAM from browser storage", err);
   }
+  return null;
+}
+
+function loadSavedSram() {
+  const bytes = loadSramFromBrowserStorage(loadedRomBaseName);
+  if (bytes && !isSramEmpty(bytes)) {
+    saveBadge.innerText = "Salvataggio: Browser (128 KB)";
+    return bytes;
+  }
+  try {
+    const lastKey = localStorage.getItem("gba_sav_last_active_key");
+    if (lastKey) {
+      const stored = localStorage.getItem(lastKey);
+      if (stored) {
+        const b = base64ToUint8(stored);
+        if (b && b.length === SRAM_SIZE && !isSramEmpty(b)) {
+          saveBadge.innerText = "Salvataggio: Ripristinato (128 KB)";
+          return b;
+        }
+      }
+    }
+  } catch (e) {}
   saveBadge.innerText = "Salvataggio: Nuovo (128 KB)";
   return new Uint8Array(SRAM_SIZE);
 }
@@ -432,15 +672,12 @@ function isSramEmpty(bytes) {
 }
 
 function persistSram(bytes) {
-  try {
-    localStorage.setItem("pokemon_quetzal_sram", uint8ToBase64(bytes));
-    saveBadge.innerText = "Salvataggio: Salvato!";
-    setTimeout(() => {
-      saveBadge.innerText = "Salvataggio: Locale (128 KB)";
-    }, 2000);
-  } catch (err) {
-    console.warn("Could not persist save to localStorage", err);
-  }
+  if (!bytes || bytes.length === 0) return;
+  saveSramToBrowserStorage(loadedRomBaseName, bytes);
+  saveBadge.innerText = "Salvataggio: Salvato!";
+  setTimeout(() => {
+    saveBadge.innerText = "Salvataggio: Browser (128 KB)";
+  }, 2000);
 }
 
 function exportCurrentSram(playerIndex = 0) {
@@ -671,9 +908,12 @@ let lastKnownRemoteKeys = 0;
 let latestRemoteKeys = 0;
 let netplayViewMode = "solo";
 
-// Web Worker for background precision timer
+// Web Worker for background fallback precision timer
 let timerWorker = null;
+let lastRafTime = performance.now();
+let frameAccumulator = 0;
 let isLoopBusy = false;
+
 try {
   const blob = new Blob([`
     let timer = null;
@@ -691,162 +931,202 @@ try {
   `], { type: "application/javascript" });
   timerWorker = new Worker(URL.createObjectURL(blob));
   timerWorker.onmessage = () => {
-    if (isRunning && window.Module && !isLoopBusy) {
-      isLoopBusy = true;
-      try {
-        renderLoop(performance.now());
-      } finally {
-        isLoopBusy = false;
+    // Only drive stepping from Web Worker if requestAnimationFrame has stalled (tab hidden in background)
+    const now = performance.now();
+    if (now - lastRafTime > 75) {
+      if (isRunning && window.Module && !isLoopBusy && !(isBackgroundPaused && pauseOnBackground)) {
+        isLoopBusy = true;
+        try {
+          const advanced = runSingleSimulationFrame();
+          if (advanced) renderCanvasOnly();
+        } finally {
+          isLoopBusy = false;
+        }
       }
     }
   };
 } catch (e) {
-  console.warn("Worker timer creation failed, using setTimeout fallback", e);
+  console.warn("Worker timer creation failed, using rAF only", e);
 }
 
-function renderLoop(now) {
+function runSingleSimulationFrame() {
+  if (!isRunning || !window.Module) return false;
+
+  // 1. Controller Inputs & Netplay Lockstep
+  if (currentMode === "netplay" && activeP2PConn && activeP2PConn.open && netplayConnected) {
+    const targetFrame = totalFramesSimulated + 2;
+    if (!(targetFrame in localInputByFrame)) {
+      localInputByFrame[targetFrame] = currentKeys;
+      localInputHistory.push({ frame: targetFrame, keys: currentKeys });
+      if (localInputHistory.length > 48) localInputHistory.shift();
+    }
+
+    // Send binary packet over WebRTC DataChannel
+    const gbrb = packGbrbInput(myPlayerId, targetFrame, localInputHistory);
+    const rbal = packRbalFrame(0, gbrb);
+    try { activeP2PConn.send(rbal); } catch(e) {}
+
+    // Strict Lockstep Check: Do we have peer's input for totalFramesSimulated?
+    if (!(totalFramesSimulated in remoteInputHistory)) {
+      consecutiveWaitTicks++;
+      if (consecutiveWaitTicks >= 4) {
+        if (consecutiveWaitTicks >= 180) {
+          activateEmergencyRecoveryMode("Compagno non risponde da oltre 3s!");
+        }
+        if (consecutiveWaitTicks > 600) {
+          showCanvasOverlay(
+            "[!]",
+            "Connessione Interrotta",
+            "Nessun pacchetto ricevuto dall'altro giocatore da oltre 10s",
+            "Clicca su '[!] Recupera Sessione' in alto per continuare in singolo senza perdere progressi!",
+            () => recoverSessionToSinglePlayer()
+          );
+        } else {
+          showCanvasOverlay(
+            "[...]",
+            "Sincronizzazione Rete...",
+            `In attesa dei pacchetti del Giocatore ${remotePlayerId}...`,
+            "La simulazione riprendera automaticamente non appena arrivano i dati"
+          );
+        }
+      }
+      return false; // Wait until peer input arrives
+    }
+
+    if (consecutiveWaitTicks >= 4) {
+      hideCanvasOverlay();
+    }
+    consecutiveWaitTicks = 0;
+
+    const localKeys = localInputByFrame[totalFramesSimulated] !== undefined ? localInputByFrame[totalFramesSimulated] : 0;
+    const remoteKeys = remoteInputHistory[totalFramesSimulated] !== undefined ? remoteInputHistory[totalFramesSimulated] : 0;
+
+    const p1 = myPlayerId === 1 ? localKeys : remoteKeys;
+    const p2 = myPlayerId === 2 ? localKeys : remoteKeys;
+    window.Module._mgba_demo_set_keys(0, p1);
+    window.Module._mgba_demo_set_keys(1, p2);
+
+    delete localInputByFrame[totalFramesSimulated - 60];
+    delete remoteInputHistory[totalFramesSimulated - 60];
+  } else if (currentMode === "dual") {
+    window.Module._mgba_demo_set_keys(0, currentKeys);
+    window.Module._mgba_demo_set_keys(1, p2Keys);
+  } else {
+    window.Module._mgba_demo_set_keys(0, currentKeys);
+    window.Module._mgba_demo_set_keys(1, 0);
+  }
+
+  // 2. Step GBA Emulation Frame
+  window.Module._mgba_demo_run_frame();
+  totalFramesSimulated++;
+  frameCount++;
+
+  // 3. Audio Stream to Ring Buffer
+  if (audioEnabled && audioCtx) {
+    const activeAudioIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+    const avail = window.Module._mgba_demo_audio_available(activeAudioIdx);
+    if (avail > 0) {
+      const readCount = window.Module._mgba_demo_audio_read(activeAudioIdx, Math.min(avail, 4096));
+      const audioBufPtr = window.Module._mgba_demo_audio_buffer();
+      if (audioBufPtr && readCount > 0) {
+        const pcm16 = new Int16Array(window.Module.HEAP16.buffer, audioBufPtr, readCount * 2);
+        queueAudioPcm(pcm16, readCount);
+      }
+    }
+  }
+
+  // 4. Auto-save check every ~15 seconds (.sav Flash SRAM)
+  if (totalFramesSimulated > 0 && totalFramesSimulated % 900 === 0) {
+    const sram = exportCurrentSram(currentMode === "netplay" && myPlayerId === 2 ? 1 : 0);
+    if (sram && sram.length > 0 && !isSramEmpty(sram)) {
+      window.localSram = sram;
+      saveSramToBrowserStorage(loadedRomBaseName, sram);
+    }
+  }
+
+  // 5. Auto emergency savestate check every 2 minutes in RAM
+  if (totalFramesSimulated > 0 && (totalFramesSimulated % 7200 === 0 || Date.now() - lastAutoSavestateWallClock >= 120000)) {
+    lastAutoSavestateWallClock = Date.now();
+    createEmergencySavestate(true);
+  }
+
+  return true;
+}
+
+function renderCanvasOnly() {
+  if (currentMode === "dual" || (currentMode === "netplay" && netplayViewMode === "split")) {
+    const p1FbPtr = window.Module._mgba_demo_get_framebuffer(0);
+    const p2FbPtr = window.Module._mgba_demo_get_framebuffer(1);
+    const totalWidth = GBA_WIDTH * 2;
+
+    if (p1FbPtr && p2FbPtr && dualPixels) {
+      const p1View = new Uint32Array(window.Module.HEAPU8.buffer, p1FbPtr, GBA_STRIDE * GBA_HEIGHT);
+      const p2View = new Uint32Array(window.Module.HEAPU8.buffer, p2FbPtr, GBA_STRIDE * GBA_HEIGHT);
+
+      for (let y = 0; y < GBA_HEIGHT; y++) {
+        const srcRow = y * GBA_STRIDE;
+        const dstRow = y * totalWidth;
+        for (let x = 0; x < GBA_WIDTH; x++) {
+          dualPixels[dstRow + x] = p1View[srcRow + x] | 0xFF000000;
+        }
+        for (let x = 0; x < GBA_WIDTH; x++) {
+          dualPixels[dstRow + GBA_WIDTH + x] = p2View[srcRow + x] | 0xFF000000;
+        }
+      }
+      ctx.putImageData(dualImageData, 0, 0);
+    }
+  } else {
+    const activeScreenIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+    const fbPtr = window.Module._mgba_demo_get_framebuffer(activeScreenIdx);
+    if (fbPtr) {
+      const fbView = new Uint32Array(window.Module.HEAPU8.buffer, fbPtr, GBA_STRIDE * GBA_HEIGHT);
+      for (let y = 0; y < GBA_HEIGHT; y++) {
+        const srcRow = y * GBA_STRIDE;
+        const dstRow = y * GBA_WIDTH;
+        for (let x = 0; x < GBA_WIDTH; x++) {
+          soloPixels[dstRow + x] = fbView[srcRow + x] | 0xFF000000;
+        }
+      }
+      ctx.putImageData(soloImageData, 0, 0);
+    }
+  }
+}
+
+function mainRafLoop(now) {
+  requestAnimationFrame(mainRafLoop);
   if (!now) now = performance.now();
 
+  const elapsed = Math.min(now - lastRafTime, 100);
+  lastRafTime = now;
+
   if (isBackgroundPaused && pauseOnBackground) {
-    if (!timerWorker) {
-      setTimeout(() => renderLoop(performance.now()), 50);
-    }
     return;
   }
 
   if (isRunning && window.Module) {
-    const loopStart = performance.now();
-    const baseInterval = 1000 / 60; // 16.666 ms
+    const targetInterval = (1000 / 60) / (roomSpeed === 2 ? 2.0 : 1.0);
+    frameAccumulator += elapsed;
 
+    let steps = 0;
     const extraCatchup = (currentMode === "netplay" && maxRemoteFrame > totalFramesSimulated + 2) ? 1 : 0;
-    const framesToRun = (roomSpeed === 2 ? 2 : 1) + extraCatchup;
+    const maxSteps = 3 + extraCatchup;
 
-    let framesSimulatedThisTick = 0;
-
-    for (let step = 0; step < framesToRun; step++) {
-      // 1. Controller Inputs
-      if (currentMode === "netplay" && activeP2PConn && activeP2PConn.open && netplayConnected) {
-        const targetFrame = totalFramesSimulated + 2;
-        if (!(targetFrame in localInputByFrame)) {
-          localInputByFrame[targetFrame] = currentKeys;
-          localInputHistory.push({ frame: targetFrame, keys: currentKeys });
-          if (localInputHistory.length > 48) localInputHistory.shift();
-        }
-
-        // Send binary packet over WebRTC DataChannel
-        const gbrb = packGbrbInput(myPlayerId, targetFrame, localInputHistory);
-        const rbal = packRbalFrame(0, gbrb);
-        activeP2PConn.send(rbal);
-
-        // Strict Lockstep Check: Do we have peer's input for totalFramesSimulated?
-        if (!(totalFramesSimulated in remoteInputHistory)) {
-          consecutiveWaitTicks++;
-          if (consecutiveWaitTicks >= 4) {
-            if (consecutiveWaitTicks >= 180) {
-              activateEmergencyRecoveryMode("Compagno non risponde da oltre 3s!");
-            }
-            if (consecutiveWaitTicks > 600) {
-              showCanvasOverlay(
-                "[!]",
-                "Connessione Interrotta",
-                "Nessun pacchetto ricevuto dall'altro giocatore da oltre 10s",
-                "Clicca su '[!] Recupera Sessione' in alto per continuare in singolo senza perdere progressi!",
-                () => recoverSessionToSinglePlayer()
-              );
-            } else {
-              showCanvasOverlay(
-                "[...]",
-                "Sincronizzazione Rete...",
-                `In attesa dei pacchetti del Giocatore ${remotePlayerId}...`,
-                "La simulazione riprendera automaticamente non appena arrivano i dati"
-              );
-            }
-          }
-          break; // Stop stepping this tick until peer packet arrives!
-        }
-
-        if (consecutiveWaitTicks >= 4) {
-          hideCanvasOverlay();
-        }
-        consecutiveWaitTicks = 0;
-
-        const localKeys = localInputByFrame[totalFramesSimulated] !== undefined ? localInputByFrame[totalFramesSimulated] : 0;
-        const remoteKeys = remoteInputHistory[totalFramesSimulated] !== undefined ? remoteInputHistory[totalFramesSimulated] : 0;
-
-        const p1 = myPlayerId === 1 ? localKeys : remoteKeys;
-        const p2 = myPlayerId === 2 ? localKeys : remoteKeys;
-        window.Module._mgba_demo_set_keys(0, p1);
-        window.Module._mgba_demo_set_keys(1, p2);
-
-        delete localInputByFrame[totalFramesSimulated - 60];
-        delete remoteInputHistory[totalFramesSimulated - 60];
-      } else if (currentMode === "dual") {
-        window.Module._mgba_demo_set_keys(0, currentKeys);
-        window.Module._mgba_demo_set_keys(1, p2Keys);
-      } else {
-        window.Module._mgba_demo_set_keys(0, currentKeys);
-        window.Module._mgba_demo_set_keys(1, 0);
+    while (frameAccumulator >= targetInterval && steps < maxSteps) {
+      const advanced = runSingleSimulationFrame();
+      if (!advanced) {
+        frameAccumulator = 0;
+        break;
       }
-
-      // 2. Step GBA Emulation Frame
-      window.Module._mgba_demo_run_frame();
-      totalFramesSimulated++;
-      frameCount++;
-      framesSimulatedThisTick++;
+      frameAccumulator -= targetInterval;
+      steps++;
     }
 
-    // 3. Render Canvas
-    if (framesSimulatedThisTick > 0) {
-      if (currentMode === "dual" || (currentMode === "netplay" && netplayViewMode === "split")) {
-        const p1FbPtr = window.Module._mgba_demo_get_framebuffer(0);
-        const p2FbPtr = window.Module._mgba_demo_get_framebuffer(1);
-        const totalWidth = GBA_WIDTH * 2;
+    if (frameAccumulator > targetInterval * 2) {
+      frameAccumulator = 0;
+    }
 
-        if (p1FbPtr && p2FbPtr && dualPixels) {
-          const p1View = new Uint32Array(window.Module.HEAPU8.buffer, p1FbPtr, GBA_STRIDE * GBA_HEIGHT);
-          const p2View = new Uint32Array(window.Module.HEAPU8.buffer, p2FbPtr, GBA_STRIDE * GBA_HEIGHT);
-
-          for (let y = 0; y < GBA_HEIGHT; y++) {
-            const srcRow = y * GBA_STRIDE;
-            const dstRow = y * totalWidth;
-            for (let x = 0; x < GBA_WIDTH; x++) {
-              dualPixels[dstRow + x] = p1View[srcRow + x] | 0xFF000000;
-            }
-            for (let x = 0; x < GBA_WIDTH; x++) {
-              dualPixels[dstRow + GBA_WIDTH + x] = p2View[srcRow + x] | 0xFF000000;
-            }
-          }
-          ctx.putImageData(dualImageData, 0, 0);
-        }
-      } else {
-        const activeScreenIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
-        const fbPtr = window.Module._mgba_demo_get_framebuffer(activeScreenIdx);
-        if (fbPtr) {
-          const fbView = new Uint32Array(window.Module.HEAPU8.buffer, fbPtr, GBA_STRIDE * GBA_HEIGHT);
-          for (let y = 0; y < GBA_HEIGHT; y++) {
-            const srcRow = y * GBA_STRIDE;
-            const dstRow = y * GBA_WIDTH;
-            for (let x = 0; x < GBA_WIDTH; x++) {
-              soloPixels[dstRow + x] = fbView[srcRow + x] | 0xFF000000;
-            }
-          }
-          ctx.putImageData(soloImageData, 0, 0);
-        }
-      }
-
-      // 4. Audio Playback
-      if (audioEnabled && audioCtx && audioCtx.state === "running") {
-        const activeAudioIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
-        const avail = window.Module._mgba_demo_audio_available(activeAudioIdx);
-        if (avail > 0) {
-          const readCount = window.Module._mgba_demo_audio_read(activeAudioIdx, Math.min(avail, 4096));
-          const audioBufPtr = window.Module._mgba_demo_audio_buffer();
-          if (audioBufPtr && readCount > 0) {
-            const pcm16 = new Int16Array(window.Module.HEAP16.buffer, audioBufPtr, readCount * 2);
-            playAudioChunk(pcm16, readCount);
-          }
-        }
-      }
+    if (steps > 0) {
+      renderCanvasOnly();
     }
 
     // FPS update every 500ms
@@ -857,54 +1137,7 @@ function renderLoop(now) {
       frameCount = 0;
       lastFpsTime = now;
     }
-
-    // Auto-save check every ~20 seconds (.sav Flash SRAM)
-    if (totalFramesSimulated > 0 && totalFramesSimulated % 1200 === 0) {
-      const sram = exportCurrentSram(currentMode === "netplay" && myPlayerId === 2 ? 1 : 0);
-      if (sram && sram.length > 0) {
-        window.localSram = sram;
-        persistSram(sram);
-      }
-    }
-
-    // Auto emergency savestate check every 2 minutes in RAM
-    if (totalFramesSimulated > 0 && (totalFramesSimulated % 7200 === 0 || Date.now() - lastAutoSavestateWallClock >= 120000)) {
-      lastAutoSavestateWallClock = Date.now();
-      createEmergencySavestate(true);
-    }
-
-    const elapsed = performance.now() - loopStart;
-    const delay = Math.max(0, baseInterval - elapsed);
-    if (!timerWorker) {
-      setTimeout(() => renderLoop(performance.now()), delay);
-    }
-  } else if (!timerWorker) {
-    setTimeout(() => renderLoop(performance.now()), 50);
   }
-}
-
-function playAudioChunk(pcm16, numFrames) {
-  if (!audioCtx) return;
-  const audioBuffer = audioCtx.createBuffer(2, numFrames, 44100);
-  const left = audioBuffer.getChannelData(0);
-  const right = audioBuffer.getChannelData(1);
-
-  for (let i = 0; i < numFrames; i++) {
-    left[i] = pcm16[i * 2] / 32768.0;
-    right[i] = pcm16[i * 2 + 1] / 32768.0;
-  }
-
-  const source = audioCtx.createBufferSource();
-  source.buffer = audioBuffer;
-  if (roomSpeed === 2) {
-    source.playbackRate.value = 2.0;
-  }
-  source.connect(audioCtx.destination);
-
-  const duration = audioBuffer.duration / (roomSpeed === 2 ? 2.0 : 1.0);
-  const startTime = Math.max(audioCtx.currentTime, audioNextTime);
-  source.start(startTime);
-  audioNextTime = startTime + duration;
 }
 
 function setSpeed(speed) {
@@ -1344,12 +1577,67 @@ if (btnLoadRom && inputRomFile) {
       window.romBytes = new Uint8Array(event.target.result);
       romBadge.innerText = `ROM: ${loadedRomName}`;
       console.log(`[ROM] Caricata ROM ${loadedRomName} (${window.romBytes.length} bytes)`);
+
+      // Automatic restoration of .sav from browser storage for this ROM
+      const browserSram = loadSramFromBrowserStorage(loadedRomBaseName);
+      if (browserSram && !isSramEmpty(browserSram)) {
+        window.localSram = browserSram;
+        saveBadge.innerText = "Salvataggio: Browser (128 KB)";
+        showInGameNotice(`[💾 Progressi Caricati] Trovato e caricato salvataggio nel browser per "${loadedRomName}"!`, 4500);
+      } else {
+        window.localSram = new Uint8Array(SRAM_SIZE);
+        saveBadge.innerText = "Salvataggio: Nuovo (128 KB)";
+        showInGameNotice(`[ROM] Caricata: ${loadedRomName}. Nessun salvataggio pregresso trovato nel browser.`, 3500);
+      }
+
       startSinglePlayer(window.localSram);
-      showInGameNotice(`[ROM] Caricata: ${loadedRomName}`, 3500);
     };
     reader.readAsArrayBuffer(file);
   });
 }
+
+// Instant Save to Browser Button
+const btnSaveBrowserNow = document.getElementById("btnSaveBrowserNow");
+if (btnSaveBrowserNow) {
+  btnSaveBrowserNow.addEventListener("click", () => {
+    const activeIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+    const sram = exportCurrentSram(activeIdx);
+    if (!sram || sram.length === 0 || isSramEmpty(sram)) {
+      showInGameNotice("[AVVISO] Nessun dato salvato in gioco al momento. Salva prima dal menu del gioco (START -> Salva).", 5000);
+      return;
+    }
+    window.localSram = sram;
+    saveSramToBrowserStorage(loadedRomBaseName, sram);
+    btnSaveBrowserNow.innerText = "[✓ Salvato!]";
+    btnSaveBrowserNow.style.background = "#059669";
+    showInGameNotice(`[💾 Salvato nel Browser] I progressi di "${loadedRomName}" sono memorizzati nel browser! Pronti anche dopo il refresh.`, 4500);
+    setTimeout(() => {
+      btnSaveBrowserNow.innerText = "[💾 Salva nel Browser]";
+      btnSaveBrowserNow.style.background = "#065f46";
+    }, 2500);
+  });
+}
+
+// Save to Browser on Page Refresh or Tab Close
+window.addEventListener("beforeunload", () => {
+  if (isRunning && window.Module) {
+    const activeIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+    const sram = exportCurrentSram(activeIdx);
+    if (sram && sram.length > 0 && !isSramEmpty(sram)) {
+      saveSramToBrowserStorage(loadedRomBaseName, sram);
+    }
+  }
+});
+
+window.addEventListener("pagehide", () => {
+  if (isRunning && window.Module) {
+    const activeIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+    const sram = exportCurrentSram(activeIdx);
+    if (sram && sram.length > 0 && !isSramEmpty(sram)) {
+      saveSramToBrowserStorage(loadedRomBaseName, sram);
+    }
+  }
+});
 
 // Save Management Handlers
 btnExportSave.addEventListener("click", () => {
@@ -1749,6 +2037,8 @@ function renderKeybindsUI() {
   if (!keybindContainer) return;
   keybindContainer.innerHTML = "";
   GBA_BUTTONS.forEach((b) => {
+    const bind = userKeybinds[b.id] || { primary: b.defaultPrimary, secondary: b.defaultSecondary };
+
     const row = document.createElement("div");
     row.className = "keybind-row";
 
@@ -1756,25 +2046,74 @@ function renderKeybindsUI() {
     label.className = "keybind-label";
     label.innerText = b.label;
 
-    const btn = document.createElement("button");
-    btn.className = "keybind-btn" + (listeningButtonId === b.id ? " listening" : "");
-    btn.innerText = listeningButtonId === b.id ? "Premi un tasto..." : formatKeyCode(userKeybinds[b.id]);
-    btn.onclick = () => {
-      listeningButtonId = listeningButtonId === b.id ? null : b.id;
+    const slotsContainer = document.createElement("div");
+    slotsContainer.className = "keybind-slots";
+
+    // Primary Slot
+    const slotPrim = document.createElement("div");
+    slotPrim.className = "keybind-slot";
+    const badgePrim = document.createElement("span");
+    badgePrim.className = "keybind-slot-badge";
+    badgePrim.innerText = "Primario";
+    const btnPrim = document.createElement("button");
+    const isListeningPrim = listeningTarget && listeningTarget.buttonId === b.id && listeningTarget.slot === "primary";
+    btnPrim.className = "keybind-btn" + (isListeningPrim ? " listening" : "");
+    btnPrim.innerText = isListeningPrim ? "Premi un tasto..." : formatKeyCode(bind.primary);
+    btnPrim.onclick = (e) => {
+      e.stopPropagation();
+      listeningTarget = isListeningPrim ? null : { buttonId: b.id, slot: "primary" };
+      renderKeybindsUI();
+    };
+    slotPrim.appendChild(badgePrim);
+    slotPrim.appendChild(btnPrim);
+
+    // Secondary Slot
+    const slotSec = document.createElement("div");
+    slotSec.className = "keybind-slot";
+    const badgeSec = document.createElement("span");
+    badgeSec.className = "keybind-slot-badge";
+    badgeSec.innerText = "Secondario";
+    const btnSec = document.createElement("button");
+    const isListeningSec = listeningTarget && listeningTarget.buttonId === b.id && listeningTarget.slot === "secondary";
+    btnSec.className = "keybind-btn keybind-btn-secondary" + (isListeningSec ? " listening" : "");
+    btnSec.innerText = isListeningSec ? "Premi un tasto..." : formatKeyCode(bind.secondary);
+    btnSec.onclick = (e) => {
+      e.stopPropagation();
+      listeningTarget = isListeningSec ? null : { buttonId: b.id, slot: "secondary" };
+      renderKeybindsUI();
+    };
+    slotSec.appendChild(badgeSec);
+    slotSec.appendChild(btnSec);
+
+    // Clear Button
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "keybind-clear-btn";
+    clearBtn.title = "Azzera comandi per questo tasto";
+    clearBtn.innerText = "✕";
+    clearBtn.onclick = (e) => {
+      e.stopPropagation();
+      userKeybinds[b.id] = { primary: "", secondary: "" };
+      localStorage.setItem("gba_custom_keybinds_v3", JSON.stringify(userKeybinds));
+      rebuildKeyLookup();
+      listeningTarget = null;
       renderKeybindsUI();
     };
 
+    slotsContainer.appendChild(slotPrim);
+    slotsContainer.appendChild(slotSec);
+    slotsContainer.appendChild(clearBtn);
+
     row.appendChild(label);
-    row.appendChild(btn);
+    row.appendChild(slotsContainer);
     keybindContainer.appendChild(row);
   });
 }
 
 function applyKeybindPreset(preset) {
-  userKeybinds = Object.assign({}, preset);
-  localStorage.setItem("gba_custom_keybinds_v2", JSON.stringify(userKeybinds));
+  userKeybinds = JSON.parse(JSON.stringify(preset));
+  localStorage.setItem("gba_custom_keybinds_v3", JSON.stringify(userKeybinds));
   rebuildKeyLookup();
-  listeningButtonId = null;
+  listeningTarget = null;
   renderKeybindsUI();
 }
 
@@ -1782,9 +2121,17 @@ const presetRebit = document.getElementById("presetRebit");
 if (presetRebit) {
   presetRebit.addEventListener("click", () => {
     applyKeybindPreset({
-      UP: "ArrowUp", DOWN: "ArrowDown", LEFT: "ArrowLeft", RIGHT: "ArrowRight",
-      A: "KeyZ", B: "KeyX", START: "Enter", SELECT: "ShiftRight",
-      L: "KeyA", R: "KeyS", SPEED: "Space"
+      UP: { primary: "ArrowUp", secondary: "KeyW" },
+      DOWN: { primary: "ArrowDown", secondary: "KeyS" },
+      LEFT: { primary: "ArrowLeft", secondary: "KeyA" },
+      RIGHT: { primary: "ArrowRight", secondary: "KeyD" },
+      A: { primary: "KeyZ", secondary: "KeyJ" },
+      B: { primary: "KeyX", secondary: "KeyK" },
+      START: { primary: "Enter", secondary: "KeyM" },
+      SELECT: { primary: "ShiftRight", secondary: "ShiftLeft" },
+      L: { primary: "KeyQ", secondary: "KeyU" },
+      R: { primary: "KeyE", secondary: "KeyI" },
+      SPEED: { primary: "Space", secondary: "Tab" },
     });
   });
 }
@@ -1793,9 +2140,17 @@ const presetWasd = document.getElementById("presetWasd");
 if (presetWasd) {
   presetWasd.addEventListener("click", () => {
     applyKeybindPreset({
-      UP: "KeyW", DOWN: "KeyS", LEFT: "KeyA", RIGHT: "KeyD",
-      A: "KeyJ", B: "KeyK", START: "Enter", SELECT: "KeyU",
-      L: "KeyQ", R: "KeyE", SPEED: "Space"
+      UP: { primary: "KeyW", secondary: "ArrowUp" },
+      DOWN: { primary: "KeyS", secondary: "ArrowDown" },
+      LEFT: { primary: "KeyA", secondary: "ArrowLeft" },
+      RIGHT: { primary: "KeyD", secondary: "ArrowRight" },
+      A: { primary: "KeyJ", secondary: "KeyZ" },
+      B: { primary: "KeyK", secondary: "KeyX" },
+      START: { primary: "Enter", secondary: "KeyM" },
+      SELECT: { primary: "KeyU", secondary: "ShiftRight" },
+      L: { primary: "KeyQ", secondary: "ShiftLeft" },
+      R: { primary: "KeyE", secondary: "Backspace" },
+      SPEED: { primary: "Space", secondary: "Tab" },
     });
   });
 }
@@ -1804,9 +2159,17 @@ const presetNumpad = document.getElementById("presetNumpad");
 if (presetNumpad) {
   presetNumpad.addEventListener("click", () => {
     applyKeybindPreset({
-      UP: "Numpad8", DOWN: "Numpad2", LEFT: "Numpad4", RIGHT: "Numpad6",
-      A: "Numpad1", B: "Numpad3", START: "NumpadEnter", SELECT: "Numpad0",
-      L: "Numpad7", R: "Numpad9", SPEED: "Space"
+      UP: { primary: "Numpad8", secondary: "ArrowUp" },
+      DOWN: { primary: "Numpad2", secondary: "ArrowDown" },
+      LEFT: { primary: "Numpad4", secondary: "ArrowLeft" },
+      RIGHT: { primary: "Numpad6", secondary: "ArrowRight" },
+      A: { primary: "Numpad1", secondary: "KeyZ" },
+      B: { primary: "Numpad3", secondary: "KeyX" },
+      START: { primary: "NumpadEnter", secondary: "Enter" },
+      SELECT: { primary: "Numpad0", secondary: "ShiftRight" },
+      L: { primary: "Numpad7", secondary: "KeyQ" },
+      R: { primary: "Numpad9", secondary: "KeyE" },
+      SPEED: { primary: "Space", secondary: "Tab" },
     });
   });
 }
@@ -1815,32 +2178,33 @@ const presetReset = document.getElementById("presetReset");
 if (presetReset) {
   presetReset.addEventListener("click", () => {
     const defaults = {};
-    GBA_BUTTONS.forEach((b) => defaults[b.id] = b.defaultKey);
+    GBA_BUTTONS.forEach((b) => {
+      defaults[b.id] = { primary: b.defaultPrimary, secondary: b.defaultSecondary };
+    });
     applyKeybindPreset(defaults);
   });
 }
 
 if (btnOpenKeybindsModal) {
   btnOpenKeybindsModal.addEventListener("click", () => {
-    keybindsModal.style.display = "flex";
+    openModal(keybindsModal);
     renderKeybindsUI();
   });
 }
 
 if (btnCloseKeybindsModal) {
   btnCloseKeybindsModal.addEventListener("click", () => {
-    keybindsModal.style.display = "none";
-    listeningButtonId = null;
+    closeModal(keybindsModal);
   });
 }
 
 // Modal and Link Cable Drawer Handlers
 btnOpenNetplayModal.addEventListener("click", () => {
-  netplayModal.style.display = "flex";
+  openModal(netplayModal);
 });
 
 btnCloseNetplayModal.addEventListener("click", () => {
-  netplayModal.style.display = "none";
+  closeModal(netplayModal);
 });
 
 tabHostBtn.addEventListener("click", () => {
@@ -2237,10 +2601,10 @@ async function initCore() {
     }
 
     loadingOverlay.style.display = "none";
+    lastRafTime = performance.now();
+    requestAnimationFrame(mainRafLoop);
     if (timerWorker) {
-      timerWorker.postMessage({ action: "start", interval: roomSpeed === 2 ? 8 : 16 });
-    } else {
-      requestAnimationFrame(renderLoop);
+      timerWorker.postMessage({ action: "start", interval: 16 });
     }
 
     checkUrlHashForRoom();
