@@ -75,6 +75,9 @@
       <input type="file" id="inputSaveFile" accept=".sav" style="display: none;">
       <button id="btnImportSave">[+] Carica .sav</button>
       <button id="btnExportSave">[-] Scarica .sav</button>
+      <button id="btnSaveBrowserNow" style="background: #065f46; border-color: #10b981;" title="Salva istantaneamente lo stato nel browser (pronto anche dopo un refresh)">
+        [💾 Salva nel Browser]
+      </button>
       <button id="btnOpenSavestateModal" style="background: #312e81; border-color: #6366f1;">
         [#] Savestate di Emergenza
       </button>
@@ -408,35 +411,35 @@
 
   <!-- Keybindings & Controls Modal -->
   <div class="modal-backdrop" id="keybindsModal" style="display: none;">
-    <div class="modal-card" style="max-width: 580px;">
+    <div class="modal-card" style="max-width: 640px;">
       <div class="modal-header">
         <div style="display: flex; align-items: center; gap: 8px;">
           <span style="font-size: 16px; font-weight: bold; color: #94a3b8;">[K]</span>
-          <h2>Configurazione Comandi Tastiera</h2>
+          <h2>Configurazione Comandi Tastiera (Primari &amp; Secondari)</h2>
         </div>
         <button class="modal-close" id="btnCloseKeybindsModal">[X]</button>
       </div>
       <div class="modal-body">
         <p style="font-size: 13px; color: #a1a1aa; margin-bottom: 12px;">
-          Personalizza la mappatura dei tasti della tastiera. Clicca sul comando e premi il tasto desiderato.
+          Personalizza i comandi GBA. Puoi assegnare un tasto <strong>Primario</strong> e un tasto <strong>Secondario</strong> (di backup) per ogni pulsante. Clicca su uno slot e premi il tasto desiderato.
         </p>
 
         <!-- Presets -->
         <div style="display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap;">
-          <button id="presetRebit" style="font-size: 12px; padding: 4px 8px;">Frecce + Z/X</button>
-          <button id="presetWasd" style="font-size: 12px; padding: 4px 8px;">WASD + J/K</button>
+          <button id="presetRebit" style="font-size: 12px; padding: 4px 8px;">Frecce + Z/X (Backup WASD)</button>
+          <button id="presetWasd" style="font-size: 12px; padding: 4px 8px;">WASD + J/K (Backup Frecce)</button>
           <button id="presetNumpad" style="font-size: 12px; padding: 4px 8px;">Tastierino (8456)</button>
           <button id="presetReset" style="font-size: 12px; padding: 4px 8px; background: #3f3f46;">Default</button>
         </div>
 
         <!-- Keybind list container -->
-        <div id="keybindContainer" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px;">
+        <div id="keybindContainer" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; max-height: 380px; overflow-y: auto;">
           <!-- Dynamically populated rows -->
         </div>
       </div>
     </div>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=2.5"></script>
 </body>
 </html>
