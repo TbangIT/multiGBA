@@ -281,126 +281,350 @@ if (btnCloseOverlay) {
   });
 }
 
-// High-Fidelity Audio Ring Buffer & Resampler Pipeline
-let audioCtx = null;
-let audioProcessor = null;
-let audioEnabled = true;
-
-const AUDIO_RING_CAPACITY = 32768; // Stereo frames (~740 ms buffer capacity)
-const audioRingL = new Float32Array(AUDIO_RING_CAPACITY);
-const audioRingR = new Float32Array(AUDIO_RING_CAPACITY);
-let audioRingWritePtr = 0;
-let audioRingReadPtr = 0;
-let audioSamplesInRing = 0;
-let audioResampleFrac = 0.0;
-let isAudioBuffering = true;
-
-function handleAudioProcess(e) {
-  const outL = e.outputBuffer.getChannelData(0);
-  const outR = e.outputBuffer.getChannelData(1);
-  const bufferLen = outL.length;
-
-  if (!audioEnabled || !isRunning) {
-    outL.fill(0);
-    outR.fill(0);
-    return;
+// =============================================================
+// Audio engine (v2.6)
+// -------------------------------------------------------------
+// Cosa NON andava (misurato sul core reale, vedi CORREZIONI.md):
+//  * _mgba_demo_run_frame() NON esegue un frame GBA intero: ne esegue ~0.65.
+//    Il vecchio loop la contava come "1 frame" => gioco al ~65% della velocita'
+//    e audio prodotto a ~21.000 campioni/s invece di 32.768: buffer sempre
+//    vuoto, silenzi a raffica (~32% del tempo) e pitch "stirato" dal drift control.
+// Come funziona ora:
+//  * il tempo emulato si misura in frame video REALI (contatore del core), non in
+//    chiamate a run_frame (vedi runCoreOneVideoFrame / pumpEmulation);
+//  * l'audio esce da un AudioWorklet (thread audio dedicato: immune ai rallentamenti
+//    del thread principale). Fallback automatico: ScriptProcessor;
+//  * rapporto di ricampionamento FISSO (nessuna variazione di pitch). La piccola deriva
+//    tra clock audio e clock video si corregge variando di <= 1% la velocita' di
+//    EMULAZIONE (invisibile), mai l'altezza del suono.
+// =============================================================
+const GBA_AUDIO_RING_SRC = `
+class GbaAudioRing {
+  constructor(cap) {
+    this.cap = cap || 16384;
+    this.l = new Float32Array(this.cap);
+    this.r = new Float32Array(this.cap);
+    this.target = 4000;   // dopo un taglio per eccesso si riparte da qui (campioni core, ~120 ms)
+    this.high = 9000;     // oltre questo livello si scarta il vecchio (evita latenza accumulata)
+    this.primeAt = 1200;
+    this.ratio = 1;       // campioni core consumati per ogni campione in uscita
+    this.rx = 0; this.underruns = 0; this.trims = 0;
+    this.reset();
   }
+  reset() {
+    this.wp = 0; this.rp = 0; this.n = 0; this.frac = 0;
+    this.primed = false; this.primeAt = 1200;
+    this.lastL = 0; this.lastR = 0; this.rx = 0;
+  }
+  push(d, count) {
+    const cap = this.cap, l = this.l, r = this.r;
+    let start = 0;
+    if (count > cap) { start = count - cap; count = cap; }
+    this.rx += count;
+    if (this.n + count > this.high) {
+      let drop = this.n + count - this.target;
+      if (drop > this.n) drop = this.n;
+      if (drop > 0) {
+        this.rp = (this.rp + drop) % cap;
+        this.n -= drop;
+        this.trims++;
+      }
+    }
+    let wp = this.wp, o = start * 2;
+    for (let i = 0; i < count; i++) {
+      l[wp] = d[o++]; r[wp] = d[o++];
+      if (++wp === cap) wp = 0;
+    }
+    this.wp = wp;
+    this.n += count;
+  }
+  pull(outL, outR, len) {
+    const cap = this.cap, l = this.l, r = this.r, ratio = this.ratio;
+    let n = this.n, rp = this.rp, frac = this.frac, i = 0;
+    let lastL = this.lastL, lastR = this.lastR;
+    if (!this.primed && n >= this.primeAt) this.primed = true;
+    if (this.primed) {
+      for (; i < len; i++) {
+        if (n < 2) { this.primed = false; this.primeAt = 600; this.underruns++; break; }
+        const j = rp + 1 === cap ? 0 : rp + 1;
+        const l0 = l[rp], r0 = r[rp];
+        lastL = l0 + frac * (l[j] - l0);
+        lastR = r0 + frac * (r[j] - r0);
+        outL[i] = lastL; outR[i] = lastR;
+        frac += ratio;
+        if (frac >= 1) {
+          const w = frac | 0;
+          frac -= w; rp += w; if (rp >= cap) rp -= cap; n -= w;
+        }
+      }
+    }
+    // fuori da "primed" (avvio / underrun): dissolvenza a zero, senza "pop"
+    for (; i < len; i++) {
+      lastL *= 0.97; lastR *= 0.97;
+      if (lastL < 1e-6 && lastL > -1e-6) lastL = 0;
+      if (lastR < 1e-6 && lastR > -1e-6) lastR = 0;
+      outL[i] = lastL; outR[i] = lastR;
+    }
+    this.n = n; this.rp = rp; this.frac = frac; this.lastL = lastL; this.lastR = lastR;
+  }
+}
+`;
 
-  // Pre-buffering guard: wait until buffer reaches ~1500 samples before outputting
-  if (isAudioBuffering) {
-    if (audioSamplesInRing < 1500) {
-      outL.fill(0);
-      outR.fill(0);
+const GBA_AUDIO_WORKLET_SRC = `
+class GbaAudioProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.ring = new GbaAudioRing(16384);
+    this.epoch = 0;
+    this.acc = 0;
+    this.statEvery = Math.max(128, Math.round(sampleRate * 0.025));
+    this.port.onmessage = (e) => {
+      const m = e.data;
+      if (m.t === "pcm") this.ring.push(m.d, m.n);
+      else if (m.t === "ratio") this.ring.ratio = m.r;
+      else if (m.t === "reset") { this.ring.reset(); this.epoch = m.epoch; }
+    };
+  }
+  process(inputs, outputs) {
+    const out = outputs[0];
+    const L = out[0], R = out[1] || out[0];
+    this.ring.pull(L, R, L.length);
+    this.acc += L.length;
+    if (this.acc >= this.statEvery) {
+      this.acc = 0;
+      const g = this.ring;
+      this.port.postMessage({ t: "stat", epoch: this.epoch, fill: g.n, rx: g.rx, primed: g.primed, under: g.underruns, trims: g.trims });
+    }
+    return true;
+  }
+}
+registerProcessor("gba-audio", GbaAudioProcessor);
+`;
+
+let audioCtx = null;
+let audioNode = null;          // AudioWorkletNode (modo "worklet")
+let audioScriptNode = null;    // ScriptProcessorNode (modo "script", fallback)
+let audioRingLocal = null;     // ring sul thread principale (solo modo "script")
+let audioMode = "none";        // "none" | "worklet" | "script"
+let audioEnabled = true;
+let audioInitStarted = false;
+let audioCoreRate = 32768;     // frequenza reale del core (mGBA: 32768 Hz)
+let audioEpoch = 0;            // incrementa a ogni reset, per scartare statistiche vecchie
+let audioSent = 0;             // campioni inviati al worklet dall'ultimo reset
+let audioStat = null;          // ultimo report del worklet {fill, rx, primed, under, trims, at}
+let audioPaceSmooth = 1;
+// Buffer audio "adattivo": parte da ~73 ms; ogni underrun lo allarga (fino a ~195 ms, per PC/tab
+// con rallentamenti), poi si restringe piano quando torna tutto liscio.
+const AUDIO_TARGET_MIN = 2400;
+const AUDIO_TARGET_MAX = 6400;
+let audioTargetFill = AUDIO_TARGET_MIN;
+let audioSeenUnderruns = null;
+let audioLastUnderAt = 0;
+const AUDIO_BATCH_CAP = 8192;
+const audioBatch = new Float32Array(AUDIO_BATCH_CAP * 2);
+let audioBatchN = 0;
+
+function audioRatio() {
+  if (!audioCtx) return 1;
+  return (audioCoreRate / audioCtx.sampleRate) * (roomSpeed === 2 ? 2 : 1);
+}
+
+function audioApplyRatio() {
+  if (!audioCtx) return;
+  const r = audioRatio();
+  if (audioNode) audioNode.port.postMessage({ t: "ratio", r });
+  if (audioRingLocal) audioRingLocal.ratio = r;
+}
+
+function audioReset() {
+  audioBatchN = 0;
+  audioSent = 0;
+  audioEpoch++;
+  audioStat = null;
+  audioPaceSmooth = 1;
+  if (audioNode) audioNode.port.postMessage({ t: "reset", epoch: audioEpoch });
+  if (audioRingLocal) audioRingLocal.reset();
+}
+
+function setupAudioFallbackScriptProcessor() {
+  if (audioMode !== "none" || !audioCtx) return;
+  try {
+    const Ring = new Function(GBA_AUDIO_RING_SRC + "; return GbaAudioRing;")();
+    audioRingLocal = new Ring(16384);
+    audioRingLocal.ratio = audioRatio();
+    audioScriptNode = audioCtx.createScriptProcessor(1024, 0, 2);
+    audioScriptNode.onaudioprocess = (e) => {
+      audioRingLocal.pull(e.outputBuffer.getChannelData(0), e.outputBuffer.getChannelData(1), e.outputBuffer.length);
+    };
+    audioScriptNode.connect(audioCtx.destination);
+    audioMode = "script";
+    console.log("[Audio] modo ScriptProcessor (fallback), sampleRate", audioCtx.sampleRate);
+  } catch (err) {
+    console.warn("[Audio] Impossibile creare l'audio:", err);
+  }
+}
+
+function setupAudioGraph() {
+  const ctx = audioCtx;
+  if (ctx.audioWorklet && typeof AudioWorkletNode !== "undefined") {
+    let url = null;
+    try {
+      url = URL.createObjectURL(new Blob([GBA_AUDIO_RING_SRC + GBA_AUDIO_WORKLET_SRC], { type: "application/javascript" }));
+    } catch (e) { url = null; }
+    if (url) {
+      ctx.audioWorklet.addModule(url).then(() => {
+        URL.revokeObjectURL(url);
+        const node = new AudioWorkletNode(ctx, "gba-audio", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+        node.port.onmessage = (e) => {
+          const m = e.data;
+          if (m && m.t === "stat" && m.epoch === audioEpoch) { m.at = performance.now(); audioStat = m; }
+        };
+        node.connect(ctx.destination);
+        audioNode = node;
+        audioMode = "worklet";
+        audioReset();
+        audioApplyRatio();
+        console.log("[Audio] modo AudioWorklet, sampleRate", ctx.sampleRate, "Hz, core", audioCoreRate, "Hz");
+      }).catch((err) => {
+        console.warn("[Audio] AudioWorklet non disponibile, uso il fallback:", err);
+        setupAudioFallbackScriptProcessor();
+      });
       return;
     }
-    isAudioBuffering = false;
   }
-
-  // Underflow guard: if buffer is exhausted, briefly re-buffer to prevent perpetual crackling
-  if (audioSamplesInRing < 64) {
-    isAudioBuffering = true;
-    outL.fill(0);
-    outR.fill(0);
-    return;
-  }
-
-  // CRITICAL FIX: Query the core's REAL sample rate (32768 Hz in mGBA), NOT 44100 Hz!
-  const coreRate = (window.Module && typeof window.Module._mgba_demo_audio_sample_rate === "function")
-    ? (window.Module._mgba_demo_audio_sample_rate() || 32768)
-    : 32768;
-  const baseRate = coreRate / audioCtx.sampleRate;
-  const speedMult = (roomSpeed === 2 ? 2.0 : 1.0);
-
-  // Smooth proportional dynamic drift: maintains target ~2000 samples (~60ms) without audible pitch shift
-  const targetBuffer = 2000;
-  const diff = audioSamplesInRing - targetBuffer;
-  const driftFactor = Math.max(0.93, Math.min(1.07, 1.0 + diff * 0.000035));
-
-  const stepRate = baseRate * speedMult * driftFactor;
-
-  for (let i = 0; i < bufferLen; i++) {
-    if (audioSamplesInRing <= 2) {
-      outL[i] = 0;
-      outR[i] = 0;
-      continue;
-    }
-
-    const currIdx = audioRingReadPtr;
-    const nextIdx = (audioRingReadPtr + 1) % AUDIO_RING_CAPACITY;
-
-    const s0L = audioRingL[currIdx];
-    const s1L = audioRingL[nextIdx];
-    const s0R = audioRingR[currIdx];
-    const s1R = audioRingR[nextIdx];
-
-    // Linear interpolation
-    outL[i] = s0L + audioResampleFrac * (s1L - s0L);
-    outR[i] = s0R + audioResampleFrac * (s1R - s0R);
-
-    audioResampleFrac += stepRate;
-    const wholeFrames = Math.floor(audioResampleFrac);
-    if (wholeFrames > 0) {
-      audioResampleFrac -= wholeFrames;
-      const consumed = Math.min(wholeFrames, audioSamplesInRing);
-      audioRingReadPtr = (audioRingReadPtr + consumed) % AUDIO_RING_CAPACITY;
-      audioSamplesInRing -= consumed;
-    }
-  }
+  setupAudioFallbackScriptProcessor();
 }
 
 function initAudio() {
-  if (!audioCtx) {
+  if (!audioInitStarted) {
+    audioInitStarted = true;
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass) return;
-    audioCtx = new AudioContextClass();
     try {
-      audioProcessor = audioCtx.createScriptProcessor(2048, 0, 2);
-      audioProcessor.onaudioprocess = handleAudioProcess;
-      audioProcessor.connect(audioCtx.destination);
-    } catch (err) {
-      console.warn("Failed to create ScriptProcessorNode:", err);
+      const mod = window.Module;
+      if (mod && typeof mod._mgba_demo_audio_sample_rate === "function") {
+        audioCoreRate = mod._mgba_demo_audio_sample_rate() || 32768;
+      }
+    } catch (e) {}
+    // Contesto alla frequenza NATIVA del core: il browser ricampiona verso la scheda audio
+    // con il suo resampler di alta qualita' e noi non dobbiamo interpolare nulla (a 1x).
+    try {
+      audioCtx = new AudioContextClass({ sampleRate: audioCoreRate, latencyHint: "interactive" });
+    } catch (e1) {
+      try { audioCtx = new AudioContextClass({ latencyHint: "interactive" }); }
+      catch (e2) { audioCtx = new AudioContextClass(); }
     }
+    setupAudioGraph();
   }
   if (audioCtx && audioCtx.state === "suspended") {
-    audioCtx.resume();
+    audioCtx.resume().catch(() => {});
   }
 }
 
-function queueAudioPcm(pcm16, numFrames) {
-  if (!audioEnabled || numFrames <= 0) return;
-  if (audioSamplesInRing + numFrames > AUDIO_RING_CAPACITY) {
-    const overflow = (audioSamplesInRing + numFrames) - AUDIO_RING_CAPACITY;
-    audioRingReadPtr = (audioRingReadPtr + overflow) % AUDIO_RING_CAPACITY;
-    audioSamplesInRing -= overflow;
+// Riempimento stimato del buffer audio (campioni core) oppure null se non misurabile.
+function audioEstimatedFill() {
+  if (audioMode === "script" && audioRingLocal) {
+    return { fill: audioRingLocal.n, primed: audioRingLocal.primed };
   }
-
-  for (let i = 0; i < numFrames; i++) {
-    audioRingL[audioRingWritePtr] = pcm16[i * 2] / 32768.0;
-    audioRingR[audioRingWritePtr] = pcm16[i * 2 + 1] / 32768.0;
-    audioRingWritePtr = (audioRingWritePtr + 1) % AUDIO_RING_CAPACITY;
+  if (audioMode === "worklet" && audioStat && performance.now() - audioStat.at < 300) {
+    return { fill: Math.max(0, audioStat.fill + (audioSent - audioStat.rx)), primed: audioStat.primed };
   }
-  audioSamplesInRing += numFrames;
+  return null;
 }
+
+function audioUnderrunCount() {
+  if (audioMode === "worklet") return audioStat ? audioStat.under : null;
+  if (audioMode === "script" && audioRingLocal) return audioRingLocal.underruns;
+  return null;
+}
+
+function audioAdaptTarget() {
+  const u = audioUnderrunCount();
+  if (u === null) return;
+  const now = performance.now();
+  if (audioSeenUnderruns === null) {
+    audioSeenUnderruns = u;
+    audioLastUnderAt = now;
+  } else if (u > audioSeenUnderruns) {
+    audioSeenUnderruns = u;
+    audioLastUnderAt = now;
+    audioTargetFill = Math.min(AUDIO_TARGET_MAX, audioTargetFill + 800);
+  } else if (audioTargetFill > AUDIO_TARGET_MIN && now - audioLastUnderAt > 8000) {
+    audioLastUnderAt = now;
+    audioTargetFill = Math.max(AUDIO_TARGET_MIN, audioTargetFill - 200);
+  }
+}
+
+// Fattore di velocita' dell'emulazione (0.99 .. 1.01) per tenere il buffer audio al livello
+// desiderato. Buffer che si svuota -> si emula un filo piu' veloce; che si riempie -> piu' lento.
+function audioPaceFactor() {
+  let target = 1;
+  if (audioEnabled && audioCtx && audioCtx.state === "running") {
+    audioAdaptTarget();
+    const s = audioEstimatedFill();
+    if (s) {
+      const err = (audioTargetFill - s.fill) / audioCoreRate; // secondi; > 0 = audio in calo
+      target = 1 + Math.max(-0.01, Math.min(0.01, err * 0.25));
+    }
+  }
+  audioPaceSmooth += (target - audioPaceSmooth) * 0.1;
+  return audioPaceSmooth;
+}
+
+function audioAppend(pcm16, frames) {
+  if (audioBatchN + frames > AUDIO_BATCH_CAP) audioFlush();
+  let o = audioBatchN * 2;
+  for (let i = 0, e = frames * 2; i < e; i++) audioBatch[o++] = pcm16[i] / 32768;
+  audioBatchN += frames;
+}
+
+function audioFlush() {
+  if (audioBatchN <= 0) return;
+  const n = audioBatchN;
+  audioBatchN = 0;
+  if (audioMode === "worklet" && audioNode) {
+    const out = audioBatch.slice(0, n * 2);
+    audioNode.port.postMessage({ t: "pcm", d: out, n }, [out.buffer]);
+    audioSent += n;
+  } else if (audioMode === "script" && audioRingLocal) {
+    audioRingLocal.push(audioBatch, n);
+  }
+}
+
+// Svuota SEMPRE il buffer audio del core (anche se muto), per non farlo mai saturare.
+function audioDrainCore(idx) {
+  const M = window.Module;
+  if (!M || typeof M._mgba_demo_audio_available !== "function") return;
+  const live = audioEnabled && audioMode !== "none";
+  for (let guard = 0; guard < 16; guard++) {
+    const avail = M._mgba_demo_audio_available(idx);
+    if (!(avail > 0)) break;
+    const rc = M._mgba_demo_audio_read(idx, Math.min(avail, 2048));
+    if (!(rc > 0)) break;
+    if (live) {
+      const ptr = M._mgba_demo_audio_buffer();
+      if (!ptr) break;
+      audioAppend(new Int16Array(M.HEAP16.buffer, ptr, rc * 2), rc);
+    }
+  }
+}
+
+window.gbaAudioDebug = () => {
+  const s = audioEstimatedFill();
+  return {
+    mode: audioMode,
+    ctxState: audioCtx ? audioCtx.state : null,
+    ctxSampleRate: audioCtx ? audioCtx.sampleRate : null,
+    coreRate: audioCoreRate,
+    fillSamples: s ? Math.round(s.fill) : null,
+    fillMs: s ? Math.round((s.fill / audioCoreRate) * 1000) : null,
+    primed: s ? !!s.primed : null,
+    underruns: audioMode === "worklet" ? (audioStat ? audioStat.under : null) : (audioRingLocal ? audioRingLocal.underruns : null),
+    trims: audioMode === "worklet" ? (audioStat ? audioStat.trims : null) : (audioRingLocal ? audioRingLocal.trims : null),
+    targetMs: Math.round((audioTargetFill / audioCoreRate) * 1000),
+    paceFactor: Number(audioPaceSmooth.toFixed(4)),
+  };
+};
 
 window.addEventListener("pointerdown", () => initAudio(), { passive: true, once: false });
 
@@ -796,10 +1020,7 @@ function startSinglePlayer(sramBytes) {
       window.Module._mgba_demo_audio_clear(1);
     } catch(e) {}
   }
-  audioRingWritePtr = 0;
-  audioRingReadPtr = 0;
-  audioSamplesInRing = 0;
-  isAudioBuffering = true;
+  audioReset();
 
   const res = window.Module._mgba_demo_load_game_multi(
     rom1Ptr, romSize,
@@ -845,10 +1066,7 @@ function startDualScreenCoop() {
       window.Module._mgba_demo_audio_clear(1);
     } catch(e) {}
   }
-  audioRingWritePtr = 0;
-  audioRingReadPtr = 0;
-  audioSamplesInRing = 0;
-  isAudioBuffering = true;
+  audioReset();
 
   const res = window.Module._mgba_demo_load_game_multi(
     rom1Ptr, romSize,
@@ -896,10 +1114,7 @@ function startNetplayMultiCore(hostSramBytes, guestSramBytes, localPlayerId, vie
       window.Module._mgba_demo_audio_clear(1);
     } catch(e) {}
   }
-  audioRingWritePtr = 0;
-  audioRingReadPtr = 0;
-  audioSamplesInRing = 0;
-  isAudioBuffering = true;
+  audioReset();
 
   modeBadge.innerText = `Online: P${myPlayerId} (${netplayRoomSpeed}x Speed - P2P)`;
   modeBadge.className = "badge active";
@@ -955,8 +1170,12 @@ let netplayViewMode = "solo";
 // Web Worker for background fallback precision timer
 let timerWorker = null;
 let lastRafTime = performance.now();
-let frameAccumulator = 0;
+let lastPumpTime = performance.now();
+let pumpDebtMs = 0; // tempo emulato "dovuto" (in ms a velocita' 1x) non ancora eseguito
 let isLoopBusy = false;
+
+// Un frame video del GBA dura 280896 cicli a 16.777.216 Hz = 59.7275 Hz (NON 60 Hz esatti).
+const GBA_FRAME_MS = 1000 / (16777216 / 280896);
 
 try {
   const blob = new Blob([`
@@ -981,8 +1200,9 @@ try {
       if (isRunning && window.Module && !isLoopBusy && !(isBackgroundPaused && pauseOnBackground)) {
         isLoopBusy = true;
         try {
-          const advanced = runSingleSimulationFrame();
-          if (advanced) renderCanvasOnly();
+          // Stesso pacing del rAF (accumulatore sul tempo reale): niente piu' "un frame per tick".
+          const steps = pumpEmulation(now);
+          if (steps > 0) renderCanvasOnly();
         } finally {
           isLoopBusy = false;
         }
@@ -991,6 +1211,75 @@ try {
   };
 } catch (e) {
   console.warn("Worker timer creation failed, using rAF only", e);
+}
+
+// _mgba_demo_run_frame() avanza di ~0.65 frame GBA per chiamata (core dual in lockstep), non di 1.
+// Per avere "1 passo = 1 frame video" si richiama run_frame finche' il contatore frame del core
+// avanza. Se il core fosse gia' 1:1 il ciclo gira una volta sola (nessun costo extra).
+// I tasti restano impostati per tutte le chiamate del passo, quindi il netplay resta deterministico.
+const CORE_MAX_CALLS_PER_FRAME = 4;
+let coreFrameCounterReliable = true;
+let coreFrameCounterStuck = 0;
+
+function runCoreOneVideoFrame() {
+  const M = window.Module;
+  if (!coreFrameCounterReliable || typeof M._mgba_demo_get_frame !== "function") {
+    M._mgba_demo_run_frame();
+    return 1;
+  }
+  const before = M._mgba_demo_get_frame(0);
+  let calls = 0;
+  let after = before;
+  do {
+    M._mgba_demo_run_frame();
+    calls++;
+    after = M._mgba_demo_get_frame(0);
+  } while (after === before && calls < CORE_MAX_CALLS_PER_FRAME);
+
+  if (after === before) {
+    // Contatore fermo: se succede di continuo non e' affidabile, si torna a 1 chiamata per passo.
+    if (++coreFrameCounterStuck >= 30) {
+      coreFrameCounterReliable = false;
+      console.warn("[Core] Il contatore frame non avanza: pacing a 1 chiamata per frame.");
+    }
+  } else {
+    coreFrameCounterStuck = 0;
+  }
+  return calls;
+}
+
+// Fa avanzare l'emulazione in base al TEMPO REALE trascorso (usato da rAF e dal worker di fallback).
+// Ritorna quanti frame emulati sono stati eseguiti.
+function pumpEmulation(now) {
+  const elapsed = Math.min(Math.max(now - lastPumpTime, 0), 100);
+  lastPumpTime = now;
+  if (!isRunning || !window.Module) {
+    pumpDebtMs = 0;
+    return 0;
+  }
+
+  const speed = roomSpeed === 2 ? 2 : 1;
+  pumpDebtMs += elapsed * speed * audioPaceFactor();
+
+  const extraCatchup = (currentMode === "netplay" && maxRemoteFrame > totalFramesSimulated + 2) ? 1 : 0;
+  const maxSteps = 6 * speed + extraCatchup; // fino a ~100 ms di recupero dopo uno stallo
+
+  let steps = 0;
+  while (pumpDebtMs >= GBA_FRAME_MS && steps < maxSteps) {
+    const advanced = runSingleSimulationFrame();
+    if (!advanced) {
+      pumpDebtMs = 0;
+      break;
+    }
+    pumpDebtMs -= GBA_FRAME_MS;
+    steps++;
+  }
+
+  // Dopo un blocco lungo non si tenta di recuperare tutto: si riparte da qui.
+  if (pumpDebtMs > GBA_FRAME_MS * 3) pumpDebtMs = GBA_FRAME_MS;
+
+  audioFlush();
+  return steps;
 }
 
 function runSingleSimulationFrame() {
@@ -1060,27 +1349,13 @@ function runSingleSimulationFrame() {
     window.Module._mgba_demo_set_keys(1, 0);
   }
 
-  // 2. Step GBA Emulation Frame
-  window.Module._mgba_demo_run_frame();
+  // 2. Step GBA Emulation: UN frame video reale (puo' richiedere 1-2 chiamate a run_frame)
+  runCoreOneVideoFrame();
   totalFramesSimulated++;
   frameCount++;
 
-  // 3. Audio Stream to Ring Buffer
-  if (audioEnabled && audioCtx) {
-    const activeAudioIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
-    while (true) {
-      const avail = window.Module._mgba_demo_audio_available(activeAudioIdx);
-      if (avail <= 0) break;
-      const toRead = Math.min(avail, 2048);
-      const readCount = window.Module._mgba_demo_audio_read(activeAudioIdx, toRead);
-      if (readCount <= 0) break;
-      const audioBufPtr = window.Module._mgba_demo_audio_buffer();
-      if (!audioBufPtr) break;
-      const pcm16 = new Int16Array(window.Module.HEAP16.buffer, audioBufPtr, readCount * 2);
-      queueAudioPcm(pcm16, readCount);
-      if (avail <= toRead) break;
-    }
-  }
+  // 3. Audio del core -> motore audio (si svuota sempre il buffer del core)
+  audioDrainCore(currentMode === "netplay" && myPlayerId === 2 ? 1 : 0);
 
   // 4. Auto-save check every ~15 seconds (.sav Flash SRAM)
   if (totalFramesSimulated > 0 && totalFramesSimulated % 900 === 0) {
@@ -1142,35 +1417,15 @@ function renderCanvasOnly() {
 function mainRafLoop(now) {
   requestAnimationFrame(mainRafLoop);
   if (!now) now = performance.now();
-
-  const elapsed = Math.min(now - lastRafTime, 100);
   lastRafTime = now;
 
   if (isBackgroundPaused && pauseOnBackground) {
+    lastPumpTime = now;
     return;
   }
 
   if (isRunning && window.Module) {
-    const targetInterval = (1000 / 60) / (roomSpeed === 2 ? 2.0 : 1.0);
-    frameAccumulator += elapsed;
-
-    let steps = 0;
-    const extraCatchup = (currentMode === "netplay" && maxRemoteFrame > totalFramesSimulated + 2) ? 1 : 0;
-    const maxSteps = 3 + extraCatchup;
-
-    while (frameAccumulator >= targetInterval && steps < maxSteps) {
-      const advanced = runSingleSimulationFrame();
-      if (!advanced) {
-        frameAccumulator = 0;
-        break;
-      }
-      frameAccumulator -= targetInterval;
-      steps++;
-    }
-
-    if (frameAccumulator > targetInterval * 2) {
-      frameAccumulator = 0;
-    }
+    const steps = pumpEmulation(now);
 
     if (steps > 0) {
       renderCanvasOnly();
@@ -1184,6 +1439,9 @@ function mainRafLoop(now) {
       frameCount = 0;
       lastFpsTime = now;
     }
+  } else {
+    lastPumpTime = now;
+    pumpDebtMs = 0;
   }
 }
 
@@ -1202,6 +1460,7 @@ function setSpeed(speed) {
     speedBadge.className = "badge";
     btnSpeedToggle.innerText = "[>>] Velocita: 1x";
   }
+  audioApplyRatio();
 }
 
 // -------------------------------------------------------------
@@ -1596,6 +1855,7 @@ btnAudioToggle.addEventListener("click", () => {
   initAudio();
   audioEnabled = !audioEnabled;
   btnAudioToggle.innerText = audioEnabled ? "[Audio] Attivo" : "[Audio] Muto";
+  audioReset();
 });
 
 btnReset.addEventListener("click", () => {
@@ -2664,6 +2924,7 @@ async function initCore() {
 
     loadingOverlay.style.display = "none";
     lastRafTime = performance.now();
+    lastPumpTime = lastRafTime;
     requestAnimationFrame(mainRafLoop);
     if (timerWorker) {
       timerWorker.postMessage({ action: "start", interval: 16 });
