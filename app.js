@@ -567,6 +567,8 @@ function audioPaceFactor() {
       target = 1 + Math.max(-0.01, Math.min(0.01, err * 0.25));
     }
   }
+  // In rete i due PC non devono divergere di velocita': la correzione e' ridotta a +-0.3%.
+  if (currentMode === "netplay") target = 1 + (target - 1) * 0.3;
   audioPaceSmooth += (target - audioPaceSmooth) * 0.1;
   return audioPaceSmooth;
 }
@@ -798,12 +800,29 @@ document.addEventListener("visibilitychange", () => {
 
 // Helper for Base64 and Uint8Array
 function uint8ToBase64(bytes) {
-  let binary = "";
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  // A blocchi: molto piu' veloce del vecchio ciclo byte-per-byte (niente maxi-stringhe intermedie).
+  const parts = [];
+  for (let i = 0; i < bytes.byteLength; i += 0x8000) {
+    parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)));
   }
-  return window.btoa(binary);
+  return window.btoa(parts.join(""));
+}
+
+// Esegue un lavoro pesante (salvataggi) quando il thread e' libero, non nel mezzo di un frame.
+function deferHeavyWork(fn) {
+  const run = () => { try { fn(); } catch (e) { console.warn("[deferred]", e); } };
+  if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, { timeout: 3000 });
+  else setTimeout(run, 50);
+}
+
+// Firma veloce (FNV-1a su parole da 32 bit) per capire se un blocco di byte e' cambiato.
+let lastSavedSramSig = null;
+function quickSig(bytes) {
+  const n = bytes.byteLength >> 2;
+  const w = new Uint32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + n * 4));
+  let h = 0x811c9dc5;
+  for (let i = 0; i < n; i++) h = Math.imul(h ^ w[i], 0x01000193);
+  return h + ":" + bytes.byteLength;
 }
 
 function base64ToUint8(base64) {
@@ -1146,10 +1165,11 @@ function startNetplayMultiCore(hostSramBytes, guestSramBytes, localPlayerId, vie
   lastKnownRemoteKeys = 0;
   latestRemoteKeys = 0;
   consecutiveWaitTicks = 0;
-  localInputByFrame[0] = 0;
-  localInputByFrame[1] = 0;
-  remoteInputHistory[0] = 0;
-  remoteInputHistory[1] = 0;
+  netResetAdaptiveState();
+  for (let f = 0; f < NET_DELAY_INITIAL; f++) {
+    localInputByFrame[f] = 0;
+    remoteInputHistory[f] = 0;
+  }
   if (modeSelect) modeSelect.disabled = true;
   isRunning = true;
 }
@@ -1166,6 +1186,142 @@ let remoteInputHistory = {};
 let lastKnownRemoteKeys = 0;
 let latestRemoteKeys = 0;
 let netplayViewMode = "solo";
+
+// -------------------------------------------------------------
+// Netplay: input delay ADATTIVO + misura RTT/jitter
+// -------------------------------------------------------------
+// Prima l'input delay era fisso a 2 frame (~33 ms): bastava un ritardo di rete + jitter oltre
+// quella soglia (Wi-Fi, picchi di CPU del compagno, salvataggi) per bloccare il lockstep e far
+// comparire "Sincronizzazione Rete...". Ora ogni lato sceglie il proprio delay in base a RTT e
+// jitter misurati. Il delay e' una scelta del MITTENTE: il ricevente cerca solo il frame che gli
+// serve, quindi i due lati possono avere delay diversi senza negoziare nulla.
+const NET_DELAY_MIN = 2;
+const NET_DELAY_MAX = 10;
+const NET_DELAY_INITIAL = 4;          // i frame 0..3 sono sempre "tasti a 0" su entrambi i lati
+const NET_PING_EVERY_MS = 500;
+const NET_OVERLAY_AFTER_MS = 400;     // l'overlay compare solo per stalli davvero visibili
+const NET_EMERGENCY_AFTER_MS = 3000;
+const NET_LOST_AFTER_MS = 10000;
+const NET_PING_MAGIC = 0x52425047;    // 'RBPG'
+let netInputDelay = NET_DELAY_INITIAL;
+let netLastScheduled = NET_DELAY_INITIAL - 1;
+let netRttMs = 0, netRttDev = 0, netRttSamples = 0, netRttMin = 0;
+let netPingTimer = null;
+let netLastDelayChange = 0;
+let netStalling = false, netStallStart = 0, netOverlayLevel = 0;
+let netStallTimes = [];               // istanti degli ultimi stalli (per alzare il delay se si ripetono)
+let netStallCount = 0, netStallMsTotal = 0, netStallMsMax = 0;
+
+function netResetAdaptiveState() {
+  netInputDelay = NET_DELAY_INITIAL;
+  netLastScheduled = NET_DELAY_INITIAL - 1;
+  netRttMs = 0; netRttDev = 0; netRttSamples = 0; netRttMin = 0;
+  netLastDelayChange = performance.now();
+  netStalling = false; netStallStart = 0; netOverlayLevel = 0;
+  netStallTimes = [];
+  netStallCount = 0; netStallMsTotal = 0; netStallMsMax = 0;
+  netUpdateBadge();
+}
+
+function netSetDelay(d, why) {
+  d = Math.max(NET_DELAY_MIN, Math.min(NET_DELAY_MAX, d | 0));
+  if (d === netInputDelay) return;
+  console.log(`[Net] input delay ${netInputDelay} -> ${d} frame (${why}, rtt=${netRttMs.toFixed(0)}ms dev=${netRttDev.toFixed(0)}ms)`);
+  netInputDelay = d;
+  netLastDelayChange = performance.now();
+  netUpdateBadge();
+}
+
+// Delay desiderato: meta' RTT + margine di jitter + 1 frame (il ricevente legge una volta per frame).
+function netWantedDelay() {
+  if (!netRttSamples) return NET_DELAY_INITIAL;
+  const budget = netRttMs / 2 + 1.5 * netRttDev + 12;
+  return Math.max(NET_DELAY_MIN, Math.min(NET_DELAY_MAX, Math.ceil(budget / GBA_FRAME_MS)));
+}
+
+function netAdaptDelay(now) {
+  const wanted = netWantedDelay();
+  if (wanted > netInputDelay) {
+    netSetDelay(wanted, "rete piu' lenta");
+  } else if (wanted < netInputDelay && now - netLastDelayChange > 6000 &&
+             !netStallTimes.some((t) => now - t < 6000)) {
+    netSetDelay(netInputDelay - 1, "rete stabile");   // si scende piano, un frame alla volta
+  }
+}
+
+function netNoteStall(now) {
+  netStallTimes.push(now);
+  while (netStallTimes.length && now - netStallTimes[0] > 4000) netStallTimes.shift();
+  // 3 stalli in 4 s nonostante il delay "calcolato": la rete e' peggio di come appare dal ping.
+  if (netStallTimes.length >= 3 && now - netLastDelayChange > 1500) {
+    netStallTimes = [];
+    netSetDelay(netInputDelay + 1, "stalli ripetuti");
+  }
+}
+
+function netUpdateBadge() {
+  const el = document.getElementById("netBadge");
+  if (!el) return;
+  if (currentMode !== "netplay" || !netplayConnected) { el.style.display = "none"; return; }
+  el.style.display = "";
+  const ping = netRttSamples ? `${Math.round(netRttMs)} ms` : "...";
+  el.textContent = `Ping ${ping} | Delay ${netInputDelay}f`;
+}
+
+function netPacketIsPing(buf) {
+  return buf && buf.byteLength === 16 && new DataView(buf).getUint32(0) === NET_PING_MAGIC;
+}
+
+function netSendPing(type, ts) {
+  if (!activeP2PConn || !activeP2PConn.open) return;
+  const b = new ArrayBuffer(16);
+  const v = new DataView(b);
+  v.setUint32(0, NET_PING_MAGIC);
+  v.setUint8(4, type);
+  v.setFloat64(8, ts);
+  try { activeP2PConn.send(b); } catch (e) {}
+}
+
+function netHandlePing(buf) {
+  const v = new DataView(buf);
+  const type = v.getUint8(4);
+  const ts = v.getFloat64(8);
+  if (type === 0) {
+    netSendPing(1, ts);                       // pong: rimanda lo stesso timestamp
+  } else {
+    const rtt = performance.now() - ts;
+    if (!(rtt >= 0 && rtt < 5000)) return;
+    if (!netRttSamples) { netRttMs = rtt; netRttDev = rtt / 4; netRttMin = rtt; }
+    else {
+      netRttDev = netRttDev * 0.75 + Math.abs(rtt - netRttMs) * 0.25;
+      netRttMs = netRttMs * 0.875 + rtt * 0.125;
+      netRttMin = Math.min(netRttMin, rtt);
+    }
+    netRttSamples++;
+    netAdaptDelay(performance.now());
+    netUpdateBadge();
+  }
+}
+
+function netStartPings() {
+  netStopPings();
+  netPingTimer = setInterval(() => {
+    if (currentMode === "netplay" && netplayConnected) netSendPing(0, performance.now());
+    else { netStopPings(); netUpdateBadge(); }
+  }, NET_PING_EVERY_MS);
+}
+function netStopPings() {
+  if (netPingTimer) { clearInterval(netPingTimer); netPingTimer = null; }
+}
+
+window.gbaNetDebug = () => ({
+  delayFrames: netInputDelay,
+  delayMs: Math.round(netInputDelay * GBA_FRAME_MS),
+  rttMs: Math.round(netRttMs), rttMinMs: Math.round(netRttMin), jitterMs: Math.round(netRttDev),
+  samples: netRttSamples,
+  stalls: netStallCount, stallMsTotal: Math.round(netStallMsTotal), stallMsMax: Math.round(netStallMsMax),
+  frame: totalFramesSimulated, maxRemoteFrame,
+});
 
 // Web Worker for background fallback precision timer
 let timerWorker = null;
@@ -1261,52 +1417,73 @@ function pumpEmulation(now) {
   const speed = roomSpeed === 2 ? 2 : 1;
   pumpDebtMs += elapsed * speed * audioPaceFactor();
 
-  const extraCatchup = (currentMode === "netplay" && maxRemoteFrame > totalFramesSimulated + 2) ? 1 : 0;
+  const extraCatchup = (currentMode === "netplay" && maxRemoteFrame > totalFramesSimulated + netInputDelay) ? 1 : 0;
   const maxSteps = 6 * speed + extraCatchup; // fino a ~100 ms di recupero dopo uno stallo
 
   let steps = 0;
   while (pumpDebtMs >= GBA_FRAME_MS && steps < maxSteps) {
-    const advanced = runSingleSimulationFrame();
-    if (!advanced) {
+    const r = runSingleSimulationFrame();   // 1 = avanzato, 0 = fermo, -1 = in attesa del compagno
+    if (r === 0) {
       pumpDebtMs = 0;
       break;
     }
+    if (r < 0) break;                       // in attesa: il tempo "dovuto" NON si butta, si recupera dopo
     pumpDebtMs -= GBA_FRAME_MS;
     steps++;
   }
 
-  // Dopo un blocco lungo non si tenta di recuperare tutto: si riparte da qui.
-  if (pumpDebtMs > GBA_FRAME_MS * 3) pumpDebtMs = GBA_FRAME_MS;
+  if (currentMode === "netplay") {
+    // In rete un'attesa breve non deve far perdere tempo di gioco: si conserva fino a (delay+4) frame
+    // e al primo pacchetto utile si recupera in raffica. Prima il debito veniva azzerato a ogni
+    // attesa, e il gioco rallentava a ogni minimo ritardo di rete.
+    const cap = GBA_FRAME_MS * (netInputDelay + 4);
+    if (pumpDebtMs > cap) pumpDebtMs = cap;
+  } else if (pumpDebtMs > GBA_FRAME_MS * 3) {
+    // Dopo un blocco lungo non si tenta di recuperare tutto: si riparte da qui.
+    pumpDebtMs = GBA_FRAME_MS;
+  }
 
   audioFlush();
   return steps;
 }
 
 function runSingleSimulationFrame() {
-  if (!isRunning || !window.Module) return false;
+  if (!isRunning || !window.Module) return 0;
 
   // 1. Controller Inputs & Netplay Lockstep
   if (currentMode === "netplay" && activeP2PConn && activeP2PConn.open && netplayConnected) {
-    const targetFrame = totalFramesSimulated + 2;
-    if (!(targetFrame in localInputByFrame)) {
-      localInputByFrame[targetFrame] = currentKeys;
-      localInputHistory.push({ frame: targetFrame, keys: currentKeys });
-      if (localInputHistory.length > 48) localInputHistory.shift();
+    // Si programmano i tasti fino al frame (corrente + delay). Se il delay e' appena salito si
+    // riempiono i frame "buchi" con i tasti attuali; se e' sceso non c'e' nulla da aggiungere.
+    const targetFrame = totalFramesSimulated + netInputDelay;
+    for (let fr = netLastScheduled + 1; fr <= targetFrame; fr++) {
+      localInputByFrame[fr] = currentKeys;
+      localInputHistory.push({ frame: fr, keys: currentKeys });
     }
+    if (targetFrame > netLastScheduled) netLastScheduled = targetFrame;
+    while (localInputHistory.length > 48) localInputHistory.shift();
 
-    // Send binary packet over WebRTC DataChannel
-    const gbrb = packGbrbInput(myPlayerId, targetFrame, localInputHistory);
+    // Send binary packet over WebRTC DataChannel (ogni pacchetto ripete gli ultimi 32 frame)
+    const gbrb = packGbrbInput(myPlayerId, netLastScheduled, localInputHistory);
     const rbal = packRbalFrame(0, gbrb);
     try { activeP2PConn.send(rbal); } catch(e) {}
 
     // Strict Lockstep Check: Do we have peer's input for totalFramesSimulated?
     if (!(totalFramesSimulated in remoteInputHistory)) {
+      const nowMs = performance.now();
+      if (!netStalling) {
+        netStalling = true;
+        netStallStart = nowMs;
+        netStallCount++;
+        netNoteStall(nowMs);
+      }
+      const waited = nowMs - netStallStart;
       consecutiveWaitTicks++;
-      if (consecutiveWaitTicks >= 4) {
-        if (consecutiveWaitTicks >= 180) {
-          activateEmergencyRecoveryMode("Compagno non risponde da oltre 3s!");
-        }
-        if (consecutiveWaitTicks > 600) {
+      if (waited >= NET_EMERGENCY_AFTER_MS) {
+        activateEmergencyRecoveryMode("Compagno non risponde da oltre 3s!");
+      }
+      if (waited > NET_LOST_AFTER_MS) {
+        if (netOverlayLevel !== 2) {
+          netOverlayLevel = 2;
           showCanvasOverlay(
             "[!]",
             "Connessione Interrotta",
@@ -1314,20 +1491,28 @@ function runSingleSimulationFrame() {
             "Clicca su '[!] Recupera Sessione' in alto per continuare in singolo senza perdere progressi!",
             () => recoverSessionToSinglePlayer()
           );
-        } else {
-          showCanvasOverlay(
-            "[...]",
-            "Sincronizzazione Rete...",
-            `In attesa dei pacchetti del Giocatore ${remotePlayerId}...`,
-            "La simulazione riprendera automaticamente non appena arrivano i dati"
-          );
         }
+      } else if (waited >= NET_OVERLAY_AFTER_MS && netOverlayLevel !== 1) {
+        netOverlayLevel = 1;
+        showCanvasOverlay(
+          "[...]",
+          "Sincronizzazione Rete...",
+          `In attesa dei pacchetti del Giocatore ${remotePlayerId}...`,
+          "La simulazione riprendera automaticamente non appena arrivano i dati"
+        );
       }
-      return false; // Wait until peer input arrives
+      return -1; // Wait until peer input arrives
     }
 
-    if (consecutiveWaitTicks >= 4) {
-      hideCanvasOverlay();
+    if (netStalling) {
+      const dur = performance.now() - netStallStart;
+      netStallMsTotal += dur;
+      if (dur > netStallMsMax) netStallMsMax = dur;
+      netStalling = false;
+      if (netOverlayLevel !== 0) {
+        netOverlayLevel = 0;
+        hideCanvasOverlay();
+      }
     }
     consecutiveWaitTicks = 0;
 
@@ -1359,20 +1544,25 @@ function runSingleSimulationFrame() {
 
   // 4. Auto-save check every ~15 seconds (.sav Flash SRAM)
   if (totalFramesSimulated > 0 && totalFramesSimulated % 900 === 0) {
-    const sram = exportCurrentSram(currentMode === "netplay" && myPlayerId === 2 ? 1 : 0);
-    if (sram && sram.length > 0 && !isSramEmpty(sram)) {
-      window.localSram = sram;
-      saveSramToBrowserStorage(loadedRomBaseName, sram);
-    }
+    const sramIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+    deferHeavyWork(() => {
+      const sram = exportCurrentSram(sramIdx);
+      if (sram && sram.length > 0 && !isSramEmpty(sram)) {
+        const sig = quickSig(sram);
+        if (sig === lastSavedSramSig) return;   // nulla e' cambiato (es. AFK): niente scrittura
+        window.localSram = sram;
+        if (saveSramToBrowserStorage(loadedRomBaseName, sram)) lastSavedSramSig = sig;
+      }
+    });
   }
 
   // 5. Auto emergency savestate check every 2 minutes in RAM
   if (totalFramesSimulated > 0 && (totalFramesSimulated % 7200 === 0 || Date.now() - lastAutoSavestateWallClock >= 120000)) {
     lastAutoSavestateWallClock = Date.now();
-    createEmergencySavestate(true);
+    deferHeavyWork(() => createEmergencySavestate(true));
   }
 
-  return true;
+  return 1;
 }
 
 function renderCanvasOnly() {
@@ -1683,6 +1873,7 @@ function setupDataConnection(conn, role) {
       data instanceof ArrayBuffer || (data && typeof data === "object" && (Object.prototype.toString.call(data) === "[object ArrayBuffer]" || ArrayBuffer.isView(data)));
     if (isBin) {
       const buf = data instanceof ArrayBuffer ? data : (ArrayBuffer.isView(data) ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data);
+      if (netPacketIsPing(buf)) { netHandlePing(buf); return; }
       try {
         const { origin, payload } = unpackRbal(buf);
         if (payload && payload.byteLength >= 48) {
@@ -1782,6 +1973,8 @@ function handleP2PControlMessage(msg) {
 
     netplayConnected = true;
     window.netplayConnected = true;
+    netStartPings();
+    netUpdateBadge();
     netplayModal.style.display = "none";
     activeNetplayBanner.style.display = "block";
     activeNetplayDetail.innerText = `Collegato come Giocatore 2 (${netplayRoomSpeed}x Speed - P2P Diretto).`;
@@ -1798,6 +1991,8 @@ function handleP2PControlMessage(msg) {
 
     netplayConnected = true;
     window.netplayConnected = true;
+    netStartPings();
+    netUpdateBadge();
     netplayModal.style.display = "none";
     activeNetplayBanner.style.display = "block";
     activeNetplayDetail.innerText = `Collegato come Giocatore 1 (${netplayRoomSpeed}x Speed - P2P Diretto).`;
