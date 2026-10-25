@@ -530,12 +530,36 @@ kbd {
   border: 1px solid #27272a;
   border-radius: 8px;
   padding: 8px 12px;
+  gap: 12px;
 }
 
 .keybind-label {
   font-size: 13px;
   color: #e4e4e7;
   font-weight: 500;
+  min-width: 140px;
+}
+
+.keybind-slots {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.keybind-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.keybind-slot-badge {
+  font-size: 9px;
+  text-transform: uppercase;
+  color: #71717a;
+  font-weight: 600;
+  letter-spacing: 0.5px;
 }
 
 .keybind-btn {
@@ -543,13 +567,14 @@ kbd {
   color: #38bdf8;
   border: 1px solid #3f3f46;
   border-radius: 6px;
-  padding: 4px 10px;
+  padding: 5px 10px;
   font-family: monospace;
-  font-size: 13px;
+  font-size: 12px;
   cursor: pointer;
-  min-width: 60px;
+  min-width: 80px;
   text-align: center;
   transition: all 0.15s ease;
+  user-select: none;
 }
 
 .keybind-btn:hover {
@@ -557,11 +582,38 @@ kbd {
   border-color: #60a5fa;
 }
 
+.keybind-btn-secondary {
+  color: #a78bfa;
+  border-color: #4b5563;
+}
+
+.keybind-btn-secondary:hover {
+  border-color: #c084fc;
+}
+
 .keybind-btn.listening {
   background: #7c2d12 !important;
   border-color: #f97316 !important;
   color: #fdba74 !important;
   animation: emergencyPulse 1s infinite;
+}
+
+.keybind-clear-btn {
+  background: transparent;
+  border: 1px solid #3f3f46;
+  color: #71717a;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 11px;
+  cursor: pointer;
+  line-height: 1;
+  transition: all 0.15s ease;
+}
+
+.keybind-clear-btn:hover {
+  background: #ef4444;
+  border-color: #ef4444;
+  color: #ffffff;
 }
 
 /* In-Game Notification Banner */
