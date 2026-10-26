@@ -165,6 +165,9 @@ let soloPixels = new Uint32Array(soloImageData.data.buffer);
 let dualImageData = ctx.createImageData(GBA_WIDTH * 2, GBA_HEIGHT);
 let dualPixels = new Uint32Array(dualImageData.data.buffer);
 
+let gridImageData = ctx.createImageData(GBA_WIDTH * 2, GBA_HEIGHT * 2);
+let gridPixels = new Uint32Array(gridImageData.data.buffer);
+
 // UI Elements
 const loadingOverlay = document.getElementById("loadingOverlay");
 const loadingText = document.getElementById("loadingText");
@@ -979,11 +982,9 @@ async function fetchRomWithProgress(url) {
   return allChunks;
 }
 
-// WASM Memory Pointers
-let rom1Ptr = 0;
-let rom2Ptr = 0;
-let sram1Ptr = 0;
-let sram2Ptr = 0;
+// WASM Memory Pointers (Up to 4 Cores)
+let rom1Ptr = 0, rom2Ptr = 0, rom3Ptr = 0, rom4Ptr = 0;
+let sram1Ptr = 0, sram2Ptr = 0, sram3Ptr = 0, sram4Ptr = 0;
 
 function freeAllocatedPointers() {
   if (!window.Module) return;
@@ -996,8 +997,12 @@ function freeAllocatedPointers() {
   }
   if (rom1Ptr) { try { window.Module._free(rom1Ptr); } catch(e) {} rom1Ptr = 0; }
   if (rom2Ptr) { try { window.Module._free(rom2Ptr); } catch(e) {} rom2Ptr = 0; }
+  if (rom3Ptr) { try { window.Module._free(rom3Ptr); } catch(e) {} rom3Ptr = 0; }
+  if (rom4Ptr) { try { window.Module._free(rom4Ptr); } catch(e) {} rom4Ptr = 0; }
   if (sram1Ptr) { try { window.Module._free(sram1Ptr); } catch(e) {} sram1Ptr = 0; }
   if (sram2Ptr) { try { window.Module._free(sram2Ptr); } catch(e) {} sram2Ptr = 0; }
+  if (sram3Ptr) { try { window.Module._free(sram3Ptr); } catch(e) {} sram3Ptr = 0; }
+  if (sram4Ptr) { try { window.Module._free(sram4Ptr); } catch(e) {} sram4Ptr = 0; }
 }
 
 // Boot single player with ROM and local SRAM
@@ -1098,54 +1103,123 @@ function startDualScreenCoop() {
   isRunning = true;
 }
 
-// Boot Synchronized Online Netplay Multi-Core with exchanged saves
-function startNetplayMultiCore(hostSramBytes, guestSramBytes, localPlayerId, viewMode = "solo") {
+// Boot Synchronized Online Netplay Multi-Core with exchanged saves (2, 3, or 4 players)
+function startNetplayMultiCore(sramListOrHostSram, arg2, arg3, arg4) {
   if (!window.Module || !window.romBytes) return;
   freeAllocatedPointers();
 
-  const romSize = window.romBytes.byteLength;
-  rom1Ptr = window.Module._malloc(romSize);
-  rom2Ptr = window.Module._malloc(romSize);
-  window.Module.HEAPU8.set(window.romBytes, rom1Ptr);
-  window.Module.HEAPU8.set(window.romBytes, rom2Ptr);
+  let sramList = [];
+  let localPlayerId = 1;
+  let totalPlayers = 2;
+  let viewMode = "solo";
 
-  sram1Ptr = window.Module._malloc(SRAM_SIZE);
-  sram2Ptr = window.Module._malloc(SRAM_SIZE);
+  if (arg2 instanceof Uint8Array || (typeof arg2 === "object" && arg2 !== null && !Number.isInteger(arg2))) {
+    // Legacy 2-player signature: startNetplayMultiCore(hostSram, guestSram, localPlayerId, viewMode)
+    sramList = [sramListOrHostSram, arg2];
+    localPlayerId = arg3 || 1;
+    totalPlayers = 2;
+    viewMode = arg4 || "solo";
+  } else {
+    // New multi-player signature: startNetplayMultiCore(sramList, localPlayerId, totalPlayers, viewMode)
+    sramList = sramListOrHostSram;
+    localPlayerId = arg2 || 1;
+    totalPlayers = arg3 || 2;
+    viewMode = arg4 || "solo";
+  }
 
-  const hostSave = (hostSramBytes && hostSramBytes.length === SRAM_SIZE) ? hostSramBytes : new Uint8Array(SRAM_SIZE);
-  const guestSave = (guestSramBytes && guestSramBytes.length === SRAM_SIZE) ? guestSramBytes : new Uint8Array(SRAM_SIZE);
-
-  window.Module.HEAPU8.set(hostSave, sram1Ptr);
-  window.Module.HEAPU8.set(guestSave, sram2Ptr);
-
-  currentMode = "netplay";
+  netplayPlayerCount = totalPlayers;
   myPlayerId = localPlayerId;
   remotePlayerId = localPlayerId === 1 ? 2 : 1;
+  currentMode = "netplay";
+
+  // Active players set
+  connectedPlayerIds = new Set();
+  for (let p = 1; p <= totalPlayers; p++) {
+    connectedPlayerIds.add(p);
+  }
+
+  remotePlayerInputs = { 1: {}, 2: {}, 3: {}, 4: {} };
+  remotePlayerMaxFrame = { 1: -1, 2: -1, 3: -1, 4: -1 };
+
+  const romSize = window.romBytes.byteLength;
+  rom1Ptr = window.Module._malloc(romSize);
+  window.Module.HEAPU8.set(window.romBytes, rom1Ptr);
+
+  rom2Ptr = window.Module._malloc(romSize);
+  window.Module.HEAPU8.set(window.romBytes, rom2Ptr);
+
+  if (totalPlayers >= 3) {
+    rom3Ptr = window.Module._malloc(romSize);
+    window.Module.HEAPU8.set(window.romBytes, rom3Ptr);
+  } else {
+    rom3Ptr = 0;
+  }
+
+  if (totalPlayers >= 4) {
+    rom4Ptr = window.Module._malloc(romSize);
+    window.Module.HEAPU8.set(window.romBytes, rom4Ptr);
+  } else {
+    rom4Ptr = 0;
+  }
+
+  const getSave = (idx) => {
+    let s = null;
+    if (Array.isArray(sramList)) {
+      s = sramList[idx - 1];
+    } else if (sramList && typeof sramList === "object") {
+      s = sramList[idx];
+    }
+    if (s && s.length === SRAM_SIZE) return s;
+    const blank = new Uint8Array(SRAM_SIZE);
+    blank.fill(0xff);
+    return blank;
+  };
+
+  sram1Ptr = window.Module._malloc(SRAM_SIZE);
+  window.Module.HEAPU8.set(getSave(1), sram1Ptr);
+
+  sram2Ptr = window.Module._malloc(SRAM_SIZE);
+  window.Module.HEAPU8.set(getSave(2), sram2Ptr);
+
+  if (totalPlayers >= 3) {
+    sram3Ptr = window.Module._malloc(SRAM_SIZE);
+    window.Module.HEAPU8.set(getSave(3), sram3Ptr);
+  } else {
+    sram3Ptr = 0;
+  }
+
+  if (totalPlayers >= 4) {
+    sram4Ptr = window.Module._malloc(SRAM_SIZE);
+    window.Module.HEAPU8.set(getSave(4), sram4Ptr);
+  } else {
+    sram4Ptr = 0;
+  }
 
   if (btnToggleScreenView) btnToggleScreenView.style.display = "inline-flex";
   setScreenView(viewMode || "solo");
 
   if (window.Module && typeof window.Module._mgba_demo_audio_clear === "function") {
-    try {
-      window.Module._mgba_demo_audio_clear(0);
-      window.Module._mgba_demo_audio_clear(1);
-    } catch(e) {}
+    for (let c = 0; c < 4; c++) {
+      try { window.Module._mgba_demo_audio_clear(c); } catch(e) {}
+    }
   }
   audioReset();
 
-  modeBadge.innerText = `Online: P${myPlayerId} (${netplayRoomSpeed}x Speed - P2P)`;
+  modeBadge.innerText = `Online: P${myPlayerId}/${totalPlayers} (${netplayRoomSpeed}x Speed - P2P)`;
   modeBadge.className = "badge active";
 
   const res = window.Module._mgba_demo_load_game_multi(
     rom1Ptr, romSize,
     rom2Ptr, romSize,
-    0, 0, 0, 0,
+    rom3Ptr, rom3Ptr ? romSize : 0,
+    rom4Ptr, rom4Ptr ? romSize : 0,
     sram1Ptr, SRAM_SIZE,
     sram2Ptr, SRAM_SIZE,
-    0, 0, 0, 0,
-    2, -1
+    sram3Ptr, sram3Ptr ? SRAM_SIZE : 0,
+    sram4Ptr, sram4Ptr ? SRAM_SIZE : 0,
+    totalPlayers, -1
   );
-  console.log(`startNetplayMultiCore (Player ${myPlayerId}) load_game_multi returned:`, res);
+  console.log(`startNetplayMultiCore (Player ${myPlayerId}/${totalPlayers}) load_game_multi returned:`, res);
 
   if (netplayRtcEpoch && typeof window.Module._mgba_demo_set_rtc_epoch === "function") {
     try {
@@ -1167,6 +1241,9 @@ function startNetplayMultiCore(hostSramBytes, guestSramBytes, localPlayerId, vie
   for (let f = 0; f < NET_DELAY_INITIAL; f++) {
     localInputByFrame[f] = 0;
     remoteInputHistory[f] = 0;
+    for (let p = 1; p <= 4; p++) {
+      remotePlayerInputs[p][f] = 0;
+    }
   }
 
   if (modeSelect) modeSelect.disabled = true;
@@ -1272,21 +1349,38 @@ function netPacketIsPing(buf) {
 }
 
 function netSendPing(type, ts) {
-  if (!activeP2PConn || !activeP2PConn.open) return;
   const b = new ArrayBuffer(16);
   const v = new DataView(b);
   v.setUint32(0, NET_PING_MAGIC);
   v.setUint8(4, type);
   v.setFloat64(8, ts);
-  try { activeP2PConn.send(b); } catch (e) {}
+  if (myPlayerId === 1) {
+    for (const guest of Object.values(connectedGuests)) {
+      if (guest && guest.conn && guest.conn.open) {
+        try { guest.conn.send(b); } catch (e) {}
+      }
+    }
+  } else {
+    if (activeP2PConn && activeP2PConn.open) {
+      try { activeP2PConn.send(b); } catch (e) {}
+    }
+  }
 }
 
-function netHandlePing(buf) {
+function netHandlePing(buf, replyConn) {
   const v = new DataView(buf);
   const type = v.getUint8(4);
   const ts = v.getFloat64(8);
   if (type === 0) {
-    netSendPing(1, ts);                       // pong: rimanda lo stesso timestamp
+    const b = new ArrayBuffer(16);
+    const rv = new DataView(b);
+    rv.setUint32(0, NET_PING_MAGIC);
+    rv.setUint8(4, 1);
+    rv.setFloat64(8, ts);
+    const target = replyConn || activeP2PConn;
+    if (target && target.open) {
+      try { target.send(b); } catch(e) {}
+    }
   } else {
     const rtt = performance.now() - ts;
     if (!(rtt >= 0 && rtt < 5000)) return;
@@ -1429,7 +1523,7 @@ function runSingleSimulationFrame() {
   if (!isRunning || !window.Module) return 0;
 
   // 1. Controller Inputs & Netplay Lockstep
-  if (currentMode === "netplay" && activeP2PConn && activeP2PConn.open && netplayConnected) {
+  if (currentMode === "netplay" && netplayConnected) {
     const targetFrame = totalFramesSimulated + netInputDelay;
     for (let fr = netLastScheduled + 1; fr <= targetFrame; fr++) {
       localInputByFrame[fr] = currentKeys;
@@ -1441,10 +1535,29 @@ function runSingleSimulationFrame() {
     // Send binary packet over WebRTC DataChannel (rolling 32-frame history)
     const gbrb = packGbrbInput(myPlayerId, netLastScheduled, localInputHistory);
     const rbal = packRbalFrame(0, gbrb);
-    try { activeP2PConn.send(rbal); } catch(e) {}
+    if (myPlayerId === 1) {
+      for (const guest of Object.values(connectedGuests)) {
+        if (guest && guest.conn && guest.conn.open) {
+          try { guest.conn.send(rbal); } catch(e) {}
+        }
+      }
+    } else {
+      if (activeP2PConn && activeP2PConn.open) {
+        try { activeP2PConn.send(rbal); } catch(e) {}
+      }
+    }
 
-    // Strict Lockstep Check: Do we have peer's input for totalFramesSimulated?
-    if (!(totalFramesSimulated in remoteInputHistory)) {
+    // Strict Lockstep Check: Do we have all active remote players' inputs for totalFramesSimulated?
+    let missingPlayer = null;
+    for (const pid of connectedPlayerIds) {
+      if (pid === myPlayerId) continue;
+      if (!remotePlayerInputs[pid] || !(totalFramesSimulated in remotePlayerInputs[pid])) {
+        missingPlayer = pid;
+        break;
+      }
+    }
+
+    if (missingPlayer !== null) {
       const nowMs = performance.now();
       if (!netStalling) {
         netStalling = true;
@@ -1455,7 +1568,7 @@ function runSingleSimulationFrame() {
       const waited = nowMs - netStallStart;
       consecutiveWaitTicks++;
       if (waited >= NET_EMERGENCY_AFTER_MS) {
-        activateEmergencyRecoveryMode("Compagno non risponde da oltre 3s!");
+        activateEmergencyRecoveryMode(`Compagno P${missingPlayer} non risponde da oltre 3s!`);
       }
       if (waited > NET_LOST_AFTER_MS) {
         if (netOverlayLevel !== 2) {
@@ -1463,7 +1576,7 @@ function runSingleSimulationFrame() {
           showCanvasOverlay(
             "[!]",
             "Connessione Interrotta",
-            "Nessun pacchetto ricevuto dall'altro giocatore da oltre 10s",
+            `Nessun pacchetto ricevuto dal Giocatore ${missingPlayer} da oltre 10s`,
             "Clicca su '[!] Recupera Sessione' in alto per continuare in singolo senza perdere progressi!",
             () => recoverSessionToSinglePlayer()
           );
@@ -1473,8 +1586,8 @@ function runSingleSimulationFrame() {
         showCanvasOverlay(
           "[...]",
           "Sincronizzazione Rete...",
-          `In attesa dei pacchetti del Giocatore ${remotePlayerId}...`,
-          "La simulazione riprendera automaticamente non appena arrivano i dati"
+          `In attesa dei pacchetti del Giocatore ${missingPlayer}...`,
+          "La simulazione riprenderà automaticamente non appena arrivano i dati"
         );
       }
       return -1; // Wait until peer input arrives
@@ -1492,16 +1605,23 @@ function runSingleSimulationFrame() {
     }
     consecutiveWaitTicks = 0;
 
-    const localKeys = localInputByFrame[totalFramesSimulated] !== undefined ? localInputByFrame[totalFramesSimulated] : 0;
-    const remoteKeys = remoteInputHistory[totalFramesSimulated] !== undefined ? remoteInputHistory[totalFramesSimulated] : 0;
-
-    const p1 = myPlayerId === 1 ? localKeys : remoteKeys;
-    const p2 = myPlayerId === 2 ? localKeys : remoteKeys;
-    window.Module._mgba_demo_set_keys(0, p1);
-    window.Module._mgba_demo_set_keys(1, p2);
+    for (let c = 0; c < netplayPlayerCount; c++) {
+      const pid = c + 1;
+      let keys = 0;
+      if (pid === myPlayerId) {
+        keys = localInputByFrame[totalFramesSimulated] !== undefined ? localInputByFrame[totalFramesSimulated] : 0;
+      } else if (remotePlayerInputs[pid] && remotePlayerInputs[pid][totalFramesSimulated] !== undefined) {
+        keys = remotePlayerInputs[pid][totalFramesSimulated];
+      } else {
+        keys = 0;
+      }
+      window.Module._mgba_demo_set_keys(c, keys);
+    }
 
     delete localInputByFrame[totalFramesSimulated - 60];
-    delete remoteInputHistory[totalFramesSimulated - 60];
+    for (let p = 1; p <= 4; p++) {
+      if (remotePlayerInputs[p]) delete remotePlayerInputs[p][totalFramesSimulated - 60];
+    }
   } else if (currentMode === "dual") {
     window.Module._mgba_demo_set_keys(0, currentKeys);
     window.Module._mgba_demo_set_keys(1, p2Keys);
@@ -1516,11 +1636,19 @@ function runSingleSimulationFrame() {
   frameCount++;
 
   // 3. Audio del core -> motore audio (ascolta il proprio giocatore)
-  audioDrainCore(currentMode === "netplay" && myPlayerId === 2 ? 1 : 0);
+  const localCoreIdx = currentMode === "netplay" ? (myPlayerId - 1) : 0;
+  audioDrainCore(localCoreIdx);
+  if (currentMode === "netplay") {
+    for (let c = 0; c < netplayPlayerCount; c++) {
+      if (c !== localCoreIdx && typeof window.Module._mgba_demo_audio_clear === "function") {
+        try { window.Module._mgba_demo_audio_clear(c); } catch(e) {}
+      }
+    }
+  }
 
   // 4. Auto-save check every ~15 seconds (.sav Flash SRAM)
   if (totalFramesSimulated > 0 && totalFramesSimulated % 900 === 0) {
-    const sramIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+    const sramIdx = currentMode === "netplay" ? (myPlayerId - 1) : 0;
     deferHeavyWork(() => {
       const sram = exportCurrentSram(sramIdx);
       if (sram && sram.length > 0 && !isSramEmpty(sram)) {
@@ -1569,8 +1697,60 @@ function renderCanvasOnly() {
       }
       ctx.putImageData(dualImageData, 0, 0);
     }
+  } else if (currentMode === "netplay" && netplayViewMode === "grid") {
+    const totalW = GBA_WIDTH * 2;
+    const p1Fb = window.Module._mgba_demo_get_framebuffer(0);
+    const p2Fb = window.Module._mgba_demo_get_framebuffer(1);
+    const p3Fb = (netplayPlayerCount >= 3 && window.Module._mgba_demo_get_framebuffer) ? window.Module._mgba_demo_get_framebuffer(2) : 0;
+    const p4Fb = (netplayPlayerCount >= 4 && window.Module._mgba_demo_get_framebuffer) ? window.Module._mgba_demo_get_framebuffer(3) : 0;
+    const s0 = (window.Module._mgba_demo_get_stride && window.Module._mgba_demo_get_stride(0)) || GBA_WIDTH;
+    const s1 = (window.Module._mgba_demo_get_stride && window.Module._mgba_demo_get_stride(1)) || GBA_WIDTH;
+    const s2 = (window.Module._mgba_demo_get_stride && window.Module._mgba_demo_get_stride(2)) || GBA_WIDTH;
+    const s3 = (window.Module._mgba_demo_get_stride && window.Module._mgba_demo_get_stride(3)) || GBA_WIDTH;
+
+    const v0 = p1Fb ? new Uint32Array(window.Module.HEAPU8.buffer, p1Fb, s0 * GBA_HEIGHT) : null;
+    const v1 = p2Fb ? new Uint32Array(window.Module.HEAPU8.buffer, p2Fb, s1 * GBA_HEIGHT) : null;
+    const v2 = p3Fb ? new Uint32Array(window.Module.HEAPU8.buffer, p3Fb, s2 * GBA_HEIGHT) : null;
+    const v3 = p4Fb ? new Uint32Array(window.Module.HEAPU8.buffer, p4Fb, s3 * GBA_HEIGHT) : null;
+
+    if (gridPixels) {
+      // Top half: Core 0 (P1) and Core 1 (P2)
+      for (let y = 0; y < GBA_HEIGHT; y++) {
+        const dstRow = y * totalW;
+        const src0 = y * s0;
+        const src1 = y * s1;
+        if (v0) {
+          for (let x = 0; x < GBA_WIDTH; x++) gridPixels[dstRow + x] = v0[src0 + x] | 0xFF000000;
+        } else {
+          for (let x = 0; x < GBA_WIDTH; x++) gridPixels[dstRow + x] = 0xFF18181B;
+        }
+        if (v1) {
+          for (let x = 0; x < GBA_WIDTH; x++) gridPixels[dstRow + GBA_WIDTH + x] = v1[src1 + x] | 0xFF000000;
+        } else {
+          for (let x = 0; x < GBA_WIDTH; x++) gridPixels[dstRow + GBA_WIDTH + x] = 0xFF18181B;
+        }
+      }
+      // Bottom half: Core 2 (P3) and Core 3 (P4)
+      for (let y = 0; y < GBA_HEIGHT; y++) {
+        const dstRow = (y + GBA_HEIGHT) * totalW;
+        const src2 = y * s2;
+        const src3 = y * s3;
+        if (v2) {
+          for (let x = 0; x < GBA_WIDTH; x++) gridPixels[dstRow + x] = v2[src2 + x] | 0xFF000000;
+        } else {
+          for (let x = 0; x < GBA_WIDTH; x++) gridPixels[dstRow + x] = 0xFF18181B;
+        }
+        if (v3) {
+          for (let x = 0; x < GBA_WIDTH; x++) gridPixels[dstRow + GBA_WIDTH + x] = v3[src3 + x] | 0xFF000000;
+        } else {
+          for (let x = 0; x < GBA_WIDTH; x++) gridPixels[dstRow + GBA_WIDTH + x] = 0xFF18181B;
+        }
+      }
+      ctx.putImageData(gridImageData, 0, 0);
+    }
   } else {
-    const activeScreenIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+    // Solo view: render ONLY the local player's framebuffer (240x160)
+    const activeScreenIdx = currentMode === "netplay" ? (myPlayerId - 1) : 0;
     const fbPtr = window.Module._mgba_demo_get_framebuffer(activeScreenIdx);
     const stride = (window.Module._mgba_demo_get_stride && window.Module._mgba_demo_get_stride(activeScreenIdx)) || GBA_WIDTH;
     if (fbPtr && soloPixels) {
@@ -1637,10 +1817,16 @@ function setSpeed(speed) {
 }
 
 // -------------------------------------------------------------
-// Online Link Cable Netplay Implementation (WebRTC P2P)
+// -------------------------------------------------------------
+// Online Link Cable Netplay Implementation (WebRTC P2P Star Topology)
 // -------------------------------------------------------------
 let peer = null;
-let activeP2PConn = null;
+let activeP2PConn = null; // Guest: direct connection to Host.
+let connectedGuests = {}; // Host: slotId (2, 3, 4) -> { conn, name, sram, ready }
+let connectedPlayerIds = new Set([1]); // active players in current netplay lockstep
+let netplayPlayerCount = 2; // total players in current/upcoming session (2, 3, 4)
+let remotePlayerInputs = { 1: {}, 2: {}, 3: {}, 4: {} };
+let remotePlayerMaxFrame = { 1: -1, 2: -1, 3: -1, 4: -1 };
 let netplayConnected = false;
 window.netplayConnected = false;
 let myPlayerId = 1;
@@ -1648,7 +1834,150 @@ let remotePlayerId = 2;
 let netplayRoomSpeed = 1;
 let netplayRtcEpoch = 0;
 let currentRoomCode = "";
+let hostSramForMulti = null;
 
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str).replace(/[&<>"']/g, s => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[s]));
+}
+
+function getLobbyRoster() {
+  const hostName = (document.getElementById("hostPlayerName")?.value || "").trim() || "Host";
+  const roster = [
+    { slot: 1, name: hostName, isHost: true }
+  ];
+  for (let s = 2; s <= 4; s++) {
+    const g = connectedGuests[s];
+    if (g && g.conn && g.conn.open) {
+      roster.push({
+        slot: s,
+        name: g.name || `Giocatore ${s}`,
+        isHost: false
+      });
+    }
+  }
+  return roster;
+}
+
+function updateHostLobbyUI() {
+  const hostName = (document.getElementById("hostPlayerName")?.value || "").trim() || "Host (Tu)";
+  const slot1NameEl = document.getElementById("hostSlot1Name");
+  if (slot1NameEl) slot1NameEl.innerText = `${hostName} (Tu)`;
+
+  const readyGuests = Object.values(connectedGuests).filter(g => g.conn && g.conn.open);
+  const totalCount = 1 + readyGuests.length;
+
+  const countBadge = document.getElementById("hostLobbyCountBadge");
+  if (countBadge) countBadge.innerText = `${totalCount} / 4 Giocatori`;
+
+  for (let s = 2; s <= 4; s++) {
+    const row = document.getElementById(`hostSlot${s}`);
+    const nameEl = document.getElementById(`hostSlot${s}Name`);
+    const statusEl = document.getElementById(`hostSlot${s}Status`);
+    if (!row) continue;
+
+    const guest = connectedGuests[s];
+    if (guest && guest.conn && guest.conn.open) {
+      row.className = "lobby-player-row connected";
+      if (nameEl) {
+        nameEl.innerText = guest.name || `Giocatore ${s}`;
+        nameEl.style.color = "#f4f4f5";
+      }
+      if (statusEl) {
+        statusEl.className = "lobby-status-badge lobby-status-ready";
+        statusEl.innerText = "Pronto";
+      }
+    } else if (guest) {
+      row.className = "lobby-player-row connected";
+      if (nameEl) {
+        nameEl.innerText = guest.name || `Giocatore ${s}`;
+        nameEl.style.color = "#a1a1aa";
+      }
+      if (statusEl) {
+        statusEl.className = "lobby-status-badge lobby-status-connecting";
+        statusEl.innerText = "In arrivo...";
+      }
+    } else {
+      row.className = "lobby-player-row empty";
+      if (nameEl) {
+        nameEl.innerText = s === 2 ? "In attesa compagno..." : "Disponibile (opzionale)";
+        nameEl.style.color = "#71717a";
+      }
+      if (statusEl) {
+        statusEl.className = "lobby-status-badge lobby-status-waiting";
+        statusEl.innerText = s === 2 ? "In attesa" : "Disponibile";
+      }
+    }
+  }
+
+  if (btnHostStartGame) {
+    if (totalCount >= 2) {
+      btnHostStartGame.disabled = false;
+      btnHostStartGame.style.background = "#15803d";
+      btnHostStartGame.style.borderColor = "#22c55e";
+      btnHostStartGame.style.cursor = "pointer";
+      btnHostStartGame.innerText = `[▶] Avvia Partita (${totalCount} Giocatori)`;
+      if (hostStatusNotice) {
+        hostStatusNotice.innerText = `${totalCount} giocatori in lobby! Clicca su '[▶] Avvia Partita' per iniziare o attendi altri compagni (fino a 4).`;
+      }
+    } else {
+      btnHostStartGame.disabled = true;
+      btnHostStartGame.style.background = "#374151";
+      btnHostStartGame.style.borderColor = "#4b5563";
+      btnHostStartGame.style.cursor = "not-allowed";
+      btnHostStartGame.innerText = "[▶] In attesa dei compagni (minimo 2)...";
+      if (hostStatusNotice) {
+        hostStatusNotice.innerText = "In attesa che i compagni entrino nella stanza...";
+      }
+    }
+  }
+}
+
+function updateGuestLobbyUI(roster, mySlot) {
+  const listEl = document.getElementById("joinLobbyPlayerList");
+  const countBadge = document.getElementById("joinLobbyCountBadge");
+  const noticeEl = document.getElementById("joinStatusNotice");
+
+  if (countBadge && Array.isArray(roster)) {
+    countBadge.innerText = `${roster.length} / 4 Giocatori`;
+  }
+  if (noticeEl && Array.isArray(roster)) {
+    noticeEl.innerText = `Connesso all'Host! In attesa che l'Host avvii la partita (${roster.length} giocatori in lobby)...`;
+  }
+
+  if (!listEl || !Array.isArray(roster)) return;
+  listEl.innerHTML = "";
+
+  roster.forEach(p => {
+    const row = document.createElement("div");
+    row.className = "lobby-player-row connected";
+    const isMe = (p.slot === mySlot);
+    const tagClass = `lobby-tag-p${p.slot}`;
+    row.innerHTML = `
+      <span class="lobby-player-tag ${tagClass}">P${p.slot}</span>
+      <span style="font-weight: 600; flex: 1; margin-left: 8px; color: ${isMe ? '#a5b4fc' : '#f4f4f5'};">
+        ${escapeHtml(p.name)} ${isMe ? "(Tu)" : ""}
+      </span>
+      <span class="lobby-status-badge lobby-status-ready">${p.isHost ? "Host" : "Pronto"}</span>
+    `;
+    listEl.appendChild(row);
+  });
+}
+
+function broadcastToGuests(msg, excludeSlotId) {
+  for (const [idStr, guest] of Object.entries(connectedGuests)) {
+    const sid = parseInt(idStr, 10);
+    if (sid !== excludeSlotId && guest && guest.conn && guest.conn.open) {
+      try { guest.conn.send(msg); } catch(e) {}
+    }
+  }
+}
 
 function packGbrbInput(origin, frame, recentInputs) {
   const sampleList = recentInputs && recentInputs.length > 0
@@ -1760,148 +2089,269 @@ function clearGuestJoinTimeout() {
   }
 }
 
-function setupDataConnection(conn, role) {
-  activeP2PConn = conn;
-  myPlayerId = role;
-  remotePlayerId = myPlayerId === 1 ? 2 : 1;
+function setupHostGuestConnection(conn, slot) {
+  connectedGuests[slot] = {
+    conn: conn,
+    name: `Player ${slot}`,
+    sram: null,
+    ready: true
+  };
+  connectedPlayerIds.add(slot);
 
   conn.on("iceStateChanged", (s) => {
-    console.log(`[WebRTC ICE] State (${role === 1 ? 'Host' : 'Guest'}):`, s);
-    const notice = role === 1 ? hostStatusNotice : joinStatusNotice;
-    if (!notice) return;
-    if (s === "checking") {
-      notice.innerText = "Negoziazione router in corso (STUN/TURN)...";
-    } else if (s === "connected" || s === "completed") {
-      notice.innerText = "Router connessi con successo! Apertura canale di gioco...";
-    } else if (s === "failed") {
-      notice.innerHTML = "<span style='color:#f87171'>Connessione diretta P2P fallita. Tentativo relay TURN...</span>";
-    }
+    console.log(`[WebRTC ICE Host <-> Guest ${slot}]:`, s);
   });
 
   conn.on("open", () => {
-    console.log(`[WebRTC P2P] DataChannel aperto con successo! Ruolo: Giocatore ${myPlayerId}`);
-    clearGuestJoinTimeout();
-    if (myPlayerId === 1) {
-      // Host: Compagno connesso! Abilita il pulsante "Avvia Partita"
-      hostStatusNotice.innerText = "Compagno connesso! Clicca su '[▶] Avvia Partita' per iniziare.";
-      if (btnHostStartGame) {
-        btnHostStartGame.disabled = false;
-        btnHostStartGame.style.background = "#15803d";
-        btnHostStartGame.style.borderColor = "#22c55e";
-        btnHostStartGame.style.cursor = "pointer";
-        btnHostStartGame.innerText = "[▶] Avvia Partita";
-      }
-    } else {
-      // Guest: Annuncia disponibilita all'Host e attende che l'Host avvii
-      joinStatusNotice.innerText = "Connesso all'Host! In attesa che l'Host avvii la partita...";
-      const sendGuestHello = () => {
-        if (netplayConnected || !activeP2PConn || !activeP2PConn.open) return;
-        console.log("[WebRTC Guest] Invio guest_hello...");
-        activeP2PConn.send({ type: "guest_hello" });
-      };
-      sendGuestHello();
-      stopP2PHandshakeTimer();
-      p2pHandshakeTimer = setInterval(sendGuestHello, 1000);
-    }
+    console.log(`[WebRTC Host] DataChannel aperto per Giocatore ${slot}`);
+    // Invia welcome message con slot assegnato e roster
+    try {
+      conn.send({
+        type: "lobby_welcome",
+        assigned_slot: slot,
+        players: getLobbyRoster()
+      });
+    } catch(e) {}
+    updateHostLobbyUI();
+    broadcastToGuests({
+      type: "lobby_update",
+      players: getLobbyRoster()
+    }, slot);
   });
 
   conn.on("data", (data) => {
     if (data instanceof ArrayBuffer) {
       if (typeof netPacketIsPing === "function" && netPacketIsPing(data)) {
-        netHandlePing(data);
+        netHandlePing(data, conn);
         return;
       }
       try {
         const { origin, payload } = unpackRbal(data);
         if (payload && payload.byteLength >= 48) {
           const gbrb = unpackGbrb(payload);
-          if (gbrb && gbrb.samples && gbrb.samples.length > 0) {
+          const pid = gbrb.origin;
+          if (gbrb && gbrb.samples && gbrb.samples.length > 0 && pid >= 1 && pid <= 4) {
+            if (!remotePlayerInputs[pid]) remotePlayerInputs[pid] = {};
             for (const s of gbrb.samples) {
-              remoteInputHistory[s.frame] = s.held;
-              if (s.frame > maxRemoteFrame) {
-                maxRemoteFrame = s.frame;
+              remotePlayerInputs[pid][s.frame] = s.held;
+              if (s.frame > remotePlayerMaxFrame[pid]) {
+                remotePlayerMaxFrame[pid] = s.frame;
               }
             }
-            const newest = gbrb.samples[gbrb.samples.length - 1];
-            latestRemoteKeys = newest.held;
-            lastKnownRemoteKeys = newest.held;
+          }
+          // Relay packet to all other guests (Star Topology)
+          for (const [idStr, g] of Object.entries(connectedGuests)) {
+            const gid = parseInt(idStr, 10);
+            if (gid !== pid && g.conn && g.conn.open) {
+              try { g.conn.send(data); } catch(e) {}
+            }
           }
         }
       } catch (err) {
-        console.warn("[WebRTC P2P] Error reading peer input packet:", err);
+        console.warn("[WebRTC Host] Error unpacking input packet:", err);
       }
     } else if (typeof data === "object" || typeof data === "string") {
       const msg = typeof data === "string" ? JSON.parse(data) : data;
-      handleP2PControlMessage(msg);
+      handleHostControlMessage(msg, slot, conn);
     }
   });
 
   conn.on("close", () => {
-    console.log("[WebRTC P2P] Connessione P2P chiusa dal peer.");
-    stopP2PHandshakeTimer();
-    clearGuestJoinTimeout();
-    if (!netplayConnected) {
-      if (role === 1) {
-        hostStatusNotice.innerText = "Il compagno si è disconnesso. In attesa di una nuova connessione...";
-        if (btnHostStartGame) {
-          btnHostStartGame.disabled = true;
-          btnHostStartGame.style.background = "#374151";
-          btnHostStartGame.style.borderColor = "#4b5563";
-          btnHostStartGame.style.cursor = "not-allowed";
-          btnHostStartGame.innerText = "[▶] In attesa del compagno...";
-        }
-      } else {
-        joinStatusNotice.innerHTML = "<span style='color:#f87171'>Connessione chiusa dall'Host o fallita.</span>";
-        btnJoinExistingRoom.style.display = "block";
-      }
-    } else {
-      handleP2PDisconnect();
-    }
+    console.log(`[WebRTC Host] Connessione chiusa per Giocatore ${slot}`);
+    handleGuestDisconnect(slot);
   });
 
   conn.on("error", (err) => {
-    console.warn("[WebRTC P2P] Errore DataConnection:", err);
-    stopP2PHandshakeTimer();
-    clearGuestJoinTimeout();
-    if (!netplayConnected) {
-      if (role === 1) {
-        hostStatusNotice.innerText = `Errore di connessione: ${err.type || err}`;
-        if (btnHostStartGame) {
-          btnHostStartGame.disabled = true;
-          btnHostStartGame.style.background = "#374151";
-          btnHostStartGame.style.borderColor = "#4b5563";
-          btnHostStartGame.style.cursor = "not-allowed";
-          btnHostStartGame.innerText = "[▶] In attesa del compagno...";
-        }
-      } else {
-        joinStatusNotice.innerHTML = `<span style='color:#f87171'>Errore canale P2P: ${err.type || err}</span>`;
-        btnJoinExistingRoom.style.display = "block";
-      }
-    } else {
-      handleP2PDisconnect();
-    }
+    console.warn(`[WebRTC Host] Errore connessione Giocatore ${slot}:`, err);
+    handleGuestDisconnect(slot);
   });
 }
 
-function handleP2PControlMessage(msg) {
-  if (msg.type === "guest_hello" && myPlayerId === 1) {
-    console.log("[WebRTC Host] Guest hello ricevuto!");
-    if (!netplayConnected) {
-      hostStatusNotice.innerText = "Compagno connesso! Clicca su '[▶] Avvia Partita' per iniziare.";
-      if (btnHostStartGame) {
-        btnHostStartGame.disabled = false;
-        btnHostStartGame.style.background = "#15803d";
-        btnHostStartGame.style.borderColor = "#22c55e";
-        btnHostStartGame.style.cursor = "pointer";
-        btnHostStartGame.innerText = "[▶] Avvia Partita";
-      }
+function handleGuestDisconnect(slot) {
+  delete connectedGuests[slot];
+  connectedPlayerIds.delete(slot);
+  if (!netplayConnected) {
+    updateHostLobbyUI();
+    broadcastToGuests({
+      type: "lobby_update",
+      players: getLobbyRoster()
+    });
+  } else {
+    // Isolamento errore in partita: i giocatori rimanenti continuano senza freeze!
+    broadcastToGuests({
+      type: "player_left",
+      player_id: slot
+    });
+    showInGameNotice(`[ONLINE] Giocatore ${slot} disconnesso. La partita continua con i giocatori rimanenti.`, 5000);
+    if (Object.keys(connectedGuests).length === 0) {
+      handleP2PDisconnect();
     }
-  } else if (msg.type === "ready_and_bundle" && myPlayerId === 2) {
-    if (netplayConnected) return;
-    // Guest receives Host configuration & Host SRAM
+  }
+}
+
+function handleHostControlMessage(msg, slot, conn) {
+  if (msg.type === "guest_hello") {
+    console.log(`[WebRTC Host] Ricevuto guest_hello da Giocatore ${slot}:`, msg.name);
+    if (connectedGuests[slot]) {
+      connectedGuests[slot].name = msg.name || `Player ${slot}`;
+    }
+    updateHostLobbyUI();
+    broadcastToGuests({
+      type: "lobby_update",
+      players: getLobbyRoster()
+    });
+  } else if (msg.type === "guest_bundle") {
+    console.log(`[WebRTC Host] Ricevuto guest_bundle da Giocatore ${slot}`);
+    if (connectedGuests[slot]) {
+      connectedGuests[slot].sram = base64ToUint8(msg.sramBase64);
+    }
+    try { conn.send({ type: "bundle_ack" }); } catch(e) {}
+    checkAndLaunchHostGame();
+  } else if (msg.type === "change_speed") {
+    setSpeed(msg.speed || 1);
+    broadcastToGuests({ type: "change_speed", speed: msg.speed || 1 }, slot);
+  }
+}
+
+function checkAndLaunchHostGame() {
+  if (netplayConnected) return;
+  const guestList = Object.values(connectedGuests);
+  const allReady = guestList.length > 0 && guestList.every(g => g.sram && g.sram.length === SRAM_SIZE);
+  if (!allReady) {
+    console.log("[WebRTC Host] In attesa dei salvataggi da tutti i compagni...");
+    return;
+  }
+
+  stopP2PHandshakeTimer();
+  const totalPlayers = 1 + guestList.length;
+  netplayPlayerCount = totalPlayers;
+
+  const sramMap = {
+    1: uint8ToBase64(hostSramForMulti)
+  };
+  for (const [slotStr, g] of Object.entries(connectedGuests)) {
+    sramMap[slotStr] = uint8ToBase64(g.sram);
+  }
+
+  // Notifica a tutti i guest di iniziare con la mappa completa dei salvataggi
+  broadcastToGuests({
+    type: "start_game",
+    total_players: totalPlayers,
+    room_speed: netplayRoomSpeed,
+    rtc_epoch: netplayRtcEpoch,
+    sram_bundles: sramMap
+  });
+
+  const srams = [hostSramForMulti];
+  for (let p = 2; p <= 4; p++) {
+    if (connectedGuests[p] && connectedGuests[p].sram) {
+      srams.push(connectedGuests[p].sram);
+    } else {
+      const blank = new Uint8Array(SRAM_SIZE); blank.fill(0xff);
+      srams.push(blank);
+    }
+  }
+
+  const chosenView = document.getElementById("hostScreenView").value;
+  startNetplayMultiCore(srams, 1, totalPlayers, chosenView);
+
+  netplayConnected = true;
+  window.netplayConnected = true;
+  if (typeof netStartPings === "function") netStartPings();
+  if (typeof netUpdateBadge === "function") netUpdateBadge();
+  netplayModal.style.display = "none";
+  activeNetplayBanner.style.display = "block";
+  activeNetplayDetail.innerText = `Collegato come Giocatore 1/${totalPlayers} (${netplayRoomSpeed}x Speed - P2P Star).`;
+}
+
+function setupGuestConnection(conn) {
+  activeP2PConn = conn;
+  myPlayerId = 2; // Default, verra aggiornato da lobby_welcome
+
+  conn.on("iceStateChanged", (s) => {
+    console.log("[WebRTC ICE Guest]:", s);
+    if (!joinStatusNotice) return;
+    if (s === "checking") {
+      joinStatusNotice.innerText = "Negoziazione router in corso (STUN/TURN)...";
+    } else if (s === "connected" || s === "completed") {
+      joinStatusNotice.innerText = "Router connessi! In attesa assegnazione slot...";
+    } else if (s === "failed") {
+      joinStatusNotice.innerHTML = "<span style='color:#f87171'>Connessione P2P fallita. Tentativo relay TURN...</span>";
+    }
+  });
+
+  conn.on("open", () => {
+    console.log("[WebRTC Guest] Connesso all'Host! Invio guest_hello...");
+    clearGuestJoinTimeout();
+    const myName = (document.getElementById("joinPlayerName")?.value || "").trim() || "Player";
+    try {
+      conn.send({
+        type: "guest_hello",
+        name: myName
+      });
+    } catch(e) {}
+  });
+
+  conn.on("data", (data) => {
+    if (data instanceof ArrayBuffer) {
+      if (typeof netPacketIsPing === "function" && netPacketIsPing(data)) {
+        netHandlePing(data, conn);
+        return;
+      }
+      try {
+        const { origin, payload } = unpackRbal(data);
+        if (payload && payload.byteLength >= 48) {
+          const gbrb = unpackGbrb(payload);
+          const pid = gbrb.origin;
+          if (gbrb && gbrb.samples && gbrb.samples.length > 0 && pid >= 1 && pid <= 4) {
+            if (!remotePlayerInputs[pid]) remotePlayerInputs[pid] = {};
+            for (const s of gbrb.samples) {
+              remotePlayerInputs[pid][s.frame] = s.held;
+              if (s.frame > remotePlayerMaxFrame[pid]) {
+                remotePlayerMaxFrame[pid] = s.frame;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[WebRTC Guest] Error unpacking input packet:", err);
+      }
+    } else if (typeof data === "object" || typeof data === "string") {
+      const msg = typeof data === "string" ? JSON.parse(data) : data;
+      handleGuestControlMessage(msg, conn);
+    }
+  });
+
+  conn.on("close", () => {
+    console.log("[WebRTC Guest] Connessione chiusa dall'Host.");
+    handleGuestHostDisconnect();
+  });
+
+  conn.on("error", (err) => {
+    console.warn("[WebRTC Guest] Errore connessione Host:", err);
+    handleGuestHostDisconnect(err);
+  });
+}
+
+function handleGuestControlMessage(msg, conn) {
+  if (msg.type === "room_full") {
+    joinStatusNotice.innerHTML = "<span style='color:#f87171'>Stanza piena! Raggiunto il limite massimo di 4 giocatori.</span>";
+    btnJoinExistingRoom.style.display = "block";
+    clearGuestJoinTimeout();
+    stopP2PHandshakeTimer();
+  } else if (msg.type === "lobby_welcome") {
+    myPlayerId = msg.assigned_slot;
+    console.log(`[WebRTC Guest] Assegnato slot P${myPlayerId}`);
+    updateGuestLobbyUI(msg.players, myPlayerId);
+  } else if (msg.type === "lobby_update") {
+    updateGuestLobbyUI(msg.players, myPlayerId);
+  } else if (msg.type === "ready_and_bundle") {
+    // Host ha premuto Avvia Partita!
     stopP2PHandshakeTimer();
     clearGuestJoinTimeout();
 
+    myPlayerId = msg.assigned_player;
+    netplayPlayerCount = msg.total_players;
     netplayRoomSpeed = msg.room_speed || 1;
     netplayRtcEpoch = msg.rtc_epoch || Math.floor(Date.now() / 1000);
     setSpeed(netplayRoomSpeed);
@@ -1917,48 +2367,36 @@ function handleP2PControlMessage(msg) {
     window.localSram = mySram;
     persistSram(mySram);
 
-    const sendGuestBundle = () => {
-      if (!activeP2PConn || !activeP2PConn.open) return;
-      activeP2PConn.send({
-        type: "guest_bundle",
-        sramBase64: uint8ToBase64(mySram),
-      });
-    };
-    sendGuestBundle();
-    p2pHandshakeTimer = setInterval(sendGuestBundle, 1000);
-
-    const hostSram = base64ToUint8(msg.sramBase64);
-    const guestSram = mySram;
-
-    const chosenView = document.getElementById("joinScreenView").value;
-    startNetplayMultiCore(hostSram, guestSram, 2, chosenView);
-
-    netplayConnected = true;
-    window.netplayConnected = true;
-    if (typeof netStartPings === "function") netStartPings();
-    if (typeof netUpdateBadge === "function") netUpdateBadge();
-    netplayModal.style.display = "none";
-    activeNetplayBanner.style.display = "block";
-    activeNetplayDetail.innerText = `Collegato come Giocatore 2 (${netplayRoomSpeed}x Speed - P2P Diretto).`;
-  } else if (msg.type === "guest_bundle" && myPlayerId === 1) {
-    // Host receives Guest's SRAM
+    // Invia salvataggio all'Host
     try {
-      activeP2PConn.send({ type: "bundle_ack" });
-    } catch (e) {}
-
+      conn.send({
+        type: "guest_bundle",
+        player_id: myPlayerId,
+        sramBase64: uint8ToBase64(mySram)
+      });
+    } catch(e) {}
+  } else if (msg.type === "start_game") {
     if (netplayConnected) return;
     stopP2PHandshakeTimer();
+    clearGuestJoinTimeout();
 
-    const guestSram = base64ToUint8(msg.sramBase64);
-    let hostSram = window.localSram;
-    if (!hostSram || hostSram.length !== SRAM_SIZE) hostSram = exportCurrentSram(0);
-    if (!hostSram || hostSram.length !== SRAM_SIZE) {
-      hostSram = new Uint8Array(SRAM_SIZE);
-      hostSram.fill(0xff);
+    netplayPlayerCount = msg.total_players;
+    netplayRoomSpeed = msg.room_speed || 1;
+    netplayRtcEpoch = msg.rtc_epoch || Math.floor(Date.now() / 1000);
+    setSpeed(netplayRoomSpeed);
+
+    const srams = [];
+    for (let p = 1; p <= 4; p++) {
+      if (msg.sram_bundles && msg.sram_bundles[p]) {
+        srams.push(base64ToUint8(msg.sram_bundles[p]));
+      } else {
+        const blank = new Uint8Array(SRAM_SIZE); blank.fill(0xff);
+        srams.push(blank);
+      }
     }
 
-    const chosenView = document.getElementById("hostScreenView").value;
-    startNetplayMultiCore(hostSram, guestSram, 1, chosenView);
+    const chosenView = document.getElementById("joinScreenView").value;
+    startNetplayMultiCore(srams, myPlayerId, msg.total_players, chosenView);
 
     netplayConnected = true;
     window.netplayConnected = true;
@@ -1966,11 +2404,37 @@ function handleP2PControlMessage(msg) {
     if (typeof netUpdateBadge === "function") netUpdateBadge();
     netplayModal.style.display = "none";
     activeNetplayBanner.style.display = "block";
-    activeNetplayDetail.innerText = `Collegato come Giocatore 1 (${netplayRoomSpeed}x Speed - P2P Diretto).`;
+    activeNetplayDetail.innerText = `Collegato come Giocatore ${myPlayerId}/${msg.total_players} (${netplayRoomSpeed}x Speed - P2P Star).`;
   } else if (msg.type === "bundle_ack") {
     stopP2PHandshakeTimer();
+  } else if (msg.type === "player_left") {
+    connectedPlayerIds.delete(msg.player_id);
+    showInGameNotice(`[ONLINE] Giocatore ${msg.player_id} si è disconnesso. La partita continua.`, 4000);
   } else if (msg.type === "change_speed") {
     setSpeed(msg.speed || 1);
+  }
+}
+
+function handleGuestHostDisconnect(err) {
+  stopP2PHandshakeTimer();
+  clearGuestJoinTimeout();
+  if (typeof netStopPings === "function") netStopPings();
+  if (typeof netUpdateBadge === "function") netUpdateBadge();
+  if (!netplayConnected) {
+    joinStatusNotice.innerHTML = `<span style='color:#f87171'>Connessione chiusa dall'Host o fallita.</span>`;
+    btnJoinExistingRoom.style.display = "block";
+  } else {
+    handleP2PDisconnect();
+  }
+}
+
+// Backward-compatible alias for single connection setup
+function setupDataConnection(conn, role) {
+  if (role === 1) {
+    let freeSlot = [2, 3, 4].find(s => !connectedGuests[s]);
+    if (freeSlot) setupHostGuestConnection(conn, freeSlot);
+  } else {
+    setupGuestConnection(conn);
   }
 }
 
@@ -2732,11 +3196,17 @@ function extractRoomCode(input) {
 function closeP2PLink() {
   stopP2PHandshakeTimer();
   clearGuestJoinTimeout();
-  guestConnected = false;
   if (activeP2PConn) {
     try { activeP2PConn.close(); } catch (e) {}
     activeP2PConn = null;
   }
+  for (const guest of Object.values(connectedGuests)) {
+    if (guest && guest.conn) {
+      try { guest.conn.close(); } catch (e) {}
+    }
+  }
+  connectedGuests = {};
+  connectedPlayerIds = new Set([1]);
   if (peer) {
     try { peer.destroy(); } catch (e) {}
     peer = null;
@@ -2748,13 +3218,9 @@ function resetNetplayUi() {
   hostWaitingArea.style.display = "none";
   btnJoinExistingRoom.style.display = "block";
   joinStatusArea.style.display = "none";
-  if (btnHostStartGame) {
-    btnHostStartGame.disabled = true;
-    btnHostStartGame.style.background = "#374151";
-    btnHostStartGame.style.borderColor = "#4b5563";
-    btnHostStartGame.style.cursor = "not-allowed";
-    btnHostStartGame.innerText = "[▶] In attesa del compagno...";
-  }
+  connectedGuests = {};
+  connectedPlayerIds = new Set([1]);
+  updateHostLobbyUI();
 }
 
 btnStartHosting.addEventListener("click", () => {
@@ -2777,13 +3243,9 @@ btnStartHosting.addEventListener("click", () => {
   if (generatedRoomCode) generatedRoomCode.innerText = currentRoomCode;
   hostStatusNotice.innerText = "Registrazione stanza online in corso...";
 
-  if (btnHostStartGame) {
-    btnHostStartGame.disabled = true;
-    btnHostStartGame.style.background = "#374151";
-    btnHostStartGame.style.borderColor = "#4b5563";
-    btnHostStartGame.style.cursor = "not-allowed";
-    btnHostStartGame.innerText = "[▶] In attesa del compagno...";
-  }
+  connectedGuests = {};
+  connectedPlayerIds = new Set([1]);
+  updateHostLobbyUI();
 
   if (activeP2PConn) {
     try { activeP2PConn.close(); } catch (e) {}
@@ -2802,17 +3264,21 @@ btnStartHosting.addEventListener("click", () => {
 
     peer.on("open", (id) => {
       console.log("[WebRTC Host] Stanza registrata con ID:", id);
-      hostStatusNotice.innerText = `Stanza [${currentRoomCode}] attiva! Invia il link o codice al compagno per giocare.`;
+      hostStatusNotice.innerText = `Stanza [${currentRoomCode}] attiva! Invia il link o codice ai compagni per giocare (fino a 4 giocatori).`;
     });
 
     peer.on("connection", (conn) => {
       console.log("[WebRTC Host] Compagno collegato! Apertura canale di gioco...");
-      if (activeP2PConn && activeP2PConn.open && activeP2PConn !== conn) {
-        try { conn.close(); } catch(e) {}
+      let freeSlot = [2, 3, 4].find(s => !connectedGuests[s]);
+      if (!freeSlot) {
+        console.warn("[WebRTC Host] Stanza piena (4/4)! Rifiuto nuova connessione.");
+        conn.on("open", () => {
+          try { conn.send({ type: "room_full" }); } catch(e) {}
+          setTimeout(() => { try { conn.close(); } catch(e) {} }, 500);
+        });
         return;
       }
-      hostStatusNotice.innerText = "Compagno in arrivo! Negoziazione router in corso...";
-      setupDataConnection(conn, 1);
+      setupHostGuestConnection(conn, freeSlot);
     });
 
     peer.on("error", (err) => {
@@ -2840,7 +3306,7 @@ if (btnCopyRoomLink) {
   btnCopyRoomLink.addEventListener("click", () => {
     const code = (generatedRoomCode ? generatedRoomCode.innerText.trim() : "") || currentRoomCode;
     const link = `${window.location.origin}${window.location.pathname}#room=${code}`;
-    copyText(link, btnCopyRoomLink, "[Copia] Link Diretto (Invia al compagno)");
+    copyText(link, btnCopyRoomLink, "[Copia] Link Diretto (Invia ai compagni)");
   });
 }
 
@@ -2850,8 +3316,9 @@ if (btnHostStartGame) {
       showInGameNotice("[ROM] Carica prima il file .gba con il tasto '[ROM] Carica .gba' prima di avviare!", 6000);
       return;
     }
-    if (!activeP2PConn || !activeP2PConn.open) {
-      showInGameNotice("[AVVISO] Nessun compagno e connesso al momento.", 4000);
+    const guestCount = Object.keys(connectedGuests).length;
+    if (guestCount === 0) {
+      showInGameNotice("[AVVISO] Nessun compagno connesso. Attendi che almeno 1 giocatore entri nella stanza (minimo 2 giocatori).", 4000);
       return;
     }
 
@@ -2863,27 +3330,38 @@ if (btnHostStartGame) {
     }
     window.localSram = mySram;
     persistSram(mySram);
+    hostSramForMulti = mySram;
 
     netplayRtcEpoch = Math.floor(Date.now() / 1000);
     netplayRoomSpeed = parseInt(document.getElementById("hostRoomSpeed").value, 10) || 1;
     setSpeed(netplayRoomSpeed);
 
-    const sendHostBundle = () => {
-      if (netplayConnected || !activeP2PConn || !activeP2PConn.open) return;
-      console.log("[WebRTC Host] Invio ready_and_bundle...");
-      activeP2PConn.send({
-        type: "ready_and_bundle",
-        player: 2,
-        room_speed: netplayRoomSpeed,
-        rtc_epoch: netplayRtcEpoch,
-        sramBase64: uint8ToBase64(mySram),
-      });
-    };
+    const totalPlayers = 1 + guestCount;
+    netplayPlayerCount = totalPlayers;
 
-    sendHostBundle();
-    stopP2PHandshakeTimer();
-    p2pHandshakeTimer = setInterval(sendHostBundle, 1000);
-    hostStatusNotice.innerText = "Avvio partita in corso... Scambio salvataggi (.sav)...";
+    // Reset guest srams before exchange
+    for (const g of Object.values(connectedGuests)) {
+      g.sram = null;
+    }
+
+    // Invia ready_and_bundle a ciascun guest
+    for (const [slotStr, guest] of Object.entries(connectedGuests)) {
+      const slot = parseInt(slotStr, 10);
+      if (guest.conn && guest.conn.open) {
+        try {
+          guest.conn.send({
+            type: "ready_and_bundle",
+            assigned_player: slot,
+            total_players: totalPlayers,
+            room_speed: netplayRoomSpeed,
+            rtc_epoch: netplayRtcEpoch,
+            host_sram: uint8ToBase64(mySram)
+          });
+        } catch(e) {}
+      }
+    }
+
+    hostStatusNotice.innerText = `Avvio partita a ${totalPlayers} giocatori in corso... Scambio salvataggi (.sav)...`;
   });
 }
 
@@ -2914,14 +3392,7 @@ btnJoinExistingRoom.addEventListener("click", () => {
   joinStatusArea.style.display = "block";
   joinStatusNotice.innerText = `Ricerca stanza [${displayCode}] sul broker P2P...`;
 
-  if (activeP2PConn) {
-    try { activeP2PConn.close(); } catch (e) {}
-    activeP2PConn = null;
-  }
-  if (peer) {
-    try { peer.destroy(); } catch (e) {}
-    peer = null;
-  }
+  closeP2PLink();
 
   clearGuestJoinTimeout();
   guestJoinTimeoutTimer = setTimeout(() => {
@@ -2943,7 +3414,7 @@ btnJoinExistingRoom.addEventListener("click", () => {
       console.log("[WebRTC Guest] Connessione a Host:", targetPeerId);
       joinStatusNotice.innerText = `Host trovato! Negoziazione canale diretto P2P con [${displayCode}]...`;
       const conn = peer.connect(targetPeerId, { reliable: true });
-      setupDataConnection(conn, 2);
+      setupGuestConnection(conn);
     });
 
     peer.on("error", (err) => {
@@ -2969,14 +3440,7 @@ btnDisconnectNetplay.addEventListener("click", () => {
   clearGuestJoinTimeout();
   if (typeof netStopPings === "function") netStopPings();
   if (typeof netUpdateBadge === "function") netUpdateBadge();
-  if (activeP2PConn) {
-    try { activeP2PConn.close(); } catch (e) {}
-    activeP2PConn = null;
-  }
-  if (peer) {
-    try { peer.destroy(); } catch (e) {}
-    peer = null;
-  }
+  closeP2PLink();
   netplayConnected = false;
   window.netplayConnected = false;
   consecutiveWaitTicks = 0;
@@ -3000,7 +3464,7 @@ modeSelect.addEventListener("change", (e) => {
 const btnToggleScreenView = document.getElementById("btnToggleScreenView");
 
 function setScreenView(view) {
-  // If playing alone in single player, ALWAYS enforce single screen view!
+  // In single player, enforce single screen
   if (currentMode === "solo") {
     view = "solo";
   }
@@ -3011,7 +3475,16 @@ function setScreenView(view) {
     canvas.style.width = "960px";
     canvas.style.height = "320px";
     if (btnToggleScreenView) {
-      btnToggleScreenView.innerText = "[O] Vista: Split-Screen";
+      btnToggleScreenView.innerText = "[O] Vista: Split (2P)";
+      btnToggleScreenView.style.display = currentMode === "solo" ? "none" : "inline-flex";
+    }
+  } else if (view === "grid") {
+    canvas.width = GBA_WIDTH * 2;
+    canvas.height = GBA_HEIGHT * 2;
+    canvas.style.width = "720px";
+    canvas.style.height = "480px";
+    if (btnToggleScreenView) {
+      btnToggleScreenView.innerText = "[O] Vista: Griglia (4P)";
       btnToggleScreenView.style.display = currentMode === "solo" ? "none" : "inline-flex";
     }
   } else {
@@ -3033,7 +3506,14 @@ if (btnToggleScreenView) {
       btnToggleScreenView.style.display = "none";
       return;
     }
-    const nextView = netplayViewMode === "solo" ? "split" : "solo";
+    let nextView = "solo";
+    if (netplayViewMode === "solo") {
+      nextView = netplayPlayerCount > 2 ? "grid" : "split";
+    } else if (netplayViewMode === "split") {
+      nextView = "grid";
+    } else {
+      nextView = "solo";
+    }
     setScreenView(nextView);
   });
 }
@@ -3129,9 +3609,12 @@ window.gbaDebug = {
   isConnected: () => netplayConnected,
   getMode: () => currentMode,
   getPlayerId: () => myPlayerId,
+  getPlayerCount: () => netplayPlayerCount,
   getRoomCode: () => currentRoomCode,
   getPeer: () => peer,
   getActiveConn: () => activeP2PConn,
+  getConnectedGuests: () => connectedGuests,
+  getConnectedPlayerIds: () => Array.from(connectedPlayerIds),
   getCurrentKeys: () => currentKeys,
 };
 
