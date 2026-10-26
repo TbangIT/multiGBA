@@ -6,7 +6,6 @@
   <title>Rebit GBA Online - WebRTC P2P Netplay (GitHub Pages Edition)</title>
   <link rel="stylesheet" href="style.css?v=2.3">
   <script src="peerjs.min.js"></script>
-  <script src="p2p-link.js"></script>
   <script src="cores/mgba_dual.js"></script>
   <script src="touch-controls.js?v=2.3"></script>
 </head>
@@ -289,44 +288,12 @@
             <button id="btnCopyRoomLink" style="font-size: 12px; padding: 8px 14px; background: #065f46; border-color: #10b981; font-weight: bold;">[Copia] Link Diretto (Invia ai compagni)</button>
             <button id="btnCopyRoomCode" style="font-size: 12px; padding: 8px 14px;">[Copia] Solo Codice</button>
           </div>
-          <div class="status-notice" id="hostStatusNotice">In attesa che i compagni aprano il link ed entrino nella stanza...</div>
-
-          <!-- Lobby Giocatori Connessi (2 Giocatori) -->
-          <div class="lobby-players-box" style="margin: 14px 0; text-align: left;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-              <span style="font-size: 11px; font-weight: bold; color: #a1a1aa; text-transform: uppercase;">Lobby Giocatori:</span>
-              <span id="hostLobbyCountBadge" class="badge" style="font-size: 11px; padding: 2px 8px;">1 / 2 Giocatori</span>
-            </div>
-            <div id="hostLobbyPlayerList" style="display: flex; flex-direction: column; gap: 6px;">
-              <div class="lobby-player-row connected">
-                <span class="lobby-player-tag lobby-tag-p1">P1</span>
-                <span style="font-weight: 600; flex: 1; margin-left: 8px;" id="hostLobbyP1Name">Host (Tu)</span>
-                <span class="lobby-status-badge lobby-status-ready">Host</span>
-              </div>
-              <div class="lobby-player-row empty" id="hostLobbySlot2">
-                <span class="lobby-player-tag lobby-tag-p2">P2</span>
-                <span style="flex: 1; margin-left: 8px; color: #71717a;" id="hostLobbyP2Name">In attesa compagno...</span>
-                <span class="lobby-status-badge lobby-status-waiting" id="hostLobbyP2Status">In attesa</span>
-              </div>
-              <div class="lobby-player-row empty" id="hostLobbySlot3" style="display: none;"></div>
-              <div class="lobby-player-row empty" id="hostLobbySlot4" style="display: none;"></div>
-            </div>
-          </div>
+          <div class="status-notice" id="hostStatusNotice">In attesa che il compagno entri nella stanza...</div>
 
           <!-- Pulsante Avvia Partita (Host controlla l'avvio della partita) -->
-          <button class="primary" id="btnHostStartGame" disabled style="width: 100%; justify-content: center; padding: 12px; font-size: 14px; font-weight: bold; margin-bottom: 8px; background: #374151; border-color: #4b5563; cursor: not-allowed;">
+          <button class="primary" id="btnHostStartGame" disabled style="width: 100%; justify-content: center; padding: 12px; font-size: 14px; font-weight: bold; margin-top: 12px; background: #374151; border-color: #4b5563; cursor: not-allowed;">
             [▶] In attesa del compagno...
           </button>
-
-          <!-- Fallback manuale -->
-          <details style="margin-top: 14px; font-size: 11px; color: #71717a; text-align: left; cursor: pointer;">
-            <summary>[Opzionale] Token manuale offline (se i WebSocket sono bloccati)</summary>
-            <div style="margin-top: 8px;">
-              <textarea id="hostOfferCode" class="signal-box" readonly rows="2" placeholder="Codice invito manuale..."></textarea>
-              <textarea id="hostAnswerInput" class="signal-box" rows="2" placeholder="Incolla risposta manuale (GBA1...)" style="margin-top: 4px;"></textarea>
-              <button id="btnHostConnect" style="width: 100%; margin-top: 4px; font-size: 11px; padding: 6px;">[-&gt;] Collega Manualmente</button>
-            </div>
-          </details>
         </div>
       </div>
 
@@ -357,28 +324,6 @@
 
         <div id="joinStatusArea" style="display: none; margin-top: 16px; padding: 14px; background: #18181b; border: 1px solid #6366f1; border-radius: 8px; text-align: center;">
           <div class="status-notice" id="joinStatusNotice">Connessione all'Host in corso...</div>
-
-          <!-- Lobby Giocatori (lato Guest) -->
-          <div class="lobby-players-box" style="margin: 14px 0; text-align: left;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-              <span style="font-size: 11px; font-weight: bold; color: #a1a1aa; text-transform: uppercase;">Lobby Giocatori:</span>
-              <span id="joinLobbyCountBadge" class="badge" style="font-size: 11px; padding: 2px 8px;">In attesa...</span>
-            </div>
-            <div id="joinLobbyPlayerList" style="display: flex; flex-direction: column; gap: 6px;">
-            </div>
-          </div>
-          <div id="joinWaitingHostNotice" style="display: none; font-size: 13px; color: #fbbf24; font-weight: bold; margin: 8px 0; padding: 8px; background: rgba(245, 158, 11, 0.1); border: 1px solid #b45309; border-radius: 6px;">
-            In attesa che l'Host avvii la partita...
-          </div>
-
-          <!-- Fallback manuale -->
-          <details style="margin-top: 14px; font-size: 11px; color: #71717a; text-align: left; cursor: pointer;">
-            <summary>[Opzionale] Risposta manuale offline</summary>
-            <div style="margin-top: 8px;">
-              <textarea id="joinAnswerCode" class="signal-box" readonly rows="2" placeholder="Risposta manuale generata..."></textarea>
-              <button id="btnCopyAnswerCode" style="font-size: 11px; margin-top: 4px; padding: 6px;">[Copia] Risposta Manuale</button>
-            </div>
-          </details>
         </div>
       </div>
 
