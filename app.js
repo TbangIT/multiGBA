@@ -1124,6 +1124,42 @@ function startDualScreenCoop() {
   isRunning = true;
 }
 
+function isPeerConnOpen(conn) {
+  if (!conn) return false;
+  if (conn.open === true) return true;
+  if (conn._open === true) return true;
+  if (conn.dataChannel && conn.dataChannel.readyState === "open") return true;
+  if (conn.peerConnection && (conn.peerConnection.connectionState === "connected" || conn.peerConnection.iceConnectionState === "connected")) return true;
+  return false;
+}
+
+function encodeSramPayload(bytes) {
+  if (!bytes || isSramEmpty(bytes)) {
+    return { empty: true };
+  }
+  return { b64: uint8ToBase64(bytes) };
+}
+
+function decodeSramPayload(obj) {
+  if (!obj || obj.empty) {
+    const s = new Uint8Array(SRAM_SIZE);
+    s.fill(0xff);
+    return s;
+  }
+  if (obj.b64) {
+    return base64ToUint8(obj.b64);
+  }
+  if (typeof obj === "string") {
+    return base64ToUint8(obj);
+  }
+  if (obj instanceof Uint8Array) {
+    return obj;
+  }
+  const s = new Uint8Array(SRAM_SIZE);
+  s.fill(0xff);
+  return s;
+}
+
 // Boot Synchronized Online Netplay Multi-Core with exchanged saves (1-4 Giocatori)
 function startNetplayMultiCore(arg1, arg2, arg3, arg4) {
   if (!window.Module || !window.romBytes) return;
@@ -1169,10 +1205,11 @@ function startNetplayMultiCore(arg1, arg2, arg3, arg4) {
       const slotNum = i + 1;
       let sBytes = null;
       if (sramsMap && sramsMap[slotNum]) {
-        sBytes = (typeof sramsMap[slotNum] === "string") ? base64ToUint8(sramsMap[slotNum]) : sramsMap[slotNum];
+        sBytes = decodeSramPayload(sramsMap[slotNum]);
       }
       if (!sBytes || sBytes.length !== SRAM_SIZE) {
         sBytes = new Uint8Array(SRAM_SIZE);
+        sBytes.fill(0xff);
       }
       window.Module.HEAPU8.set(sBytes, sPtr);
       pSram.push(sPtr);
@@ -2098,7 +2135,8 @@ function updateHostLobbyUi() {
     const statusEl = document.getElementById(`hostLobbyP${slot}Status`);
     const g = connectedGuests.find(x => x.slot === slot);
     if (g && slotEl && nameEl && statusEl) {
-      if (g.ready && g.conn && g.conn.open) {
+      const connAlive = !g.conn || isPeerConnOpen(g.conn);
+      if (g.ready && connAlive) {
         readyGuestsCount++;
         slotEl.className = "lobby-player-row connected";
         nameEl.textContent = g.name || `Giocatore ${slot}`;
@@ -2168,7 +2206,7 @@ function broadcastLobbyRoster() {
     players: roster
   };
   for (const g of connectedGuests) {
-    if (g.conn && g.conn.open) {
+    if (g.conn && isPeerConnOpen(g.conn)) {
       try { g.conn.send(payload); } catch(e) {}
     }
   }
@@ -2177,6 +2215,8 @@ function broadcastLobbyRoster() {
 function updateGuestLobbyUi(data) {
   const countBadge = document.getElementById("joinLobbyCountBadge");
   const listEl = document.getElementById("joinLobbyPlayerList");
+  const waitNotice = document.getElementById("joinWaitingHostNotice");
+  if (waitNotice) waitNotice.style.display = "block";
   if (countBadge) countBadge.textContent = `${data.totalPlayers} / 4 Giocatori`;
   if (!listEl) return;
   listEl.innerHTML = "";
@@ -2276,14 +2316,14 @@ function setupDataConnection(conn, role, guestSlot) {
     } else {
       setNotice(joinStatusNotice, "Canale P2P aperto! Registrazione nella stanza...");
       const sendGuestHello = () => {
-        if (netplayConnected || !conn || !conn.open) return;
+        if (netplayConnected || !conn || !isPeerConnOpen(conn)) return;
         try {
           conn.send({ type: "guest_hello" });
         } catch(e) {}
       };
       sendGuestHello();
       stopP2PHandshakeTimer();
-      p2pHandshakeTimer = setInterval(sendGuestHello, 1500);
+      p2pHandshakeTimer = setInterval(sendGuestHello, 1200);
     }
   });
 
@@ -2384,6 +2424,8 @@ function handleP2PControlMessage(msg, fromConn) {
     netplayRoomSpeed = msg.roomSpeed || 1;
     setSpeed(netplayRoomSpeed);
 
+    const waitNotice = document.getElementById("joinWaitingHostNotice");
+    if (waitNotice) waitNotice.style.display = "block";
     setNotice(joinStatusNotice, `Sei nella Stanza [${currentRoomCode}] come Giocatore ${myPlayerId}!\nIn attesa che l'Host avvii la partita...`);
 
     const mySram = getLocalSramForHandshake();
@@ -2392,37 +2434,40 @@ function handleP2PControlMessage(msg, fromConn) {
     const myName = (joinInput && joinInput.value.trim()) || `Giocatore ${myPlayerId}`;
 
     const targetConn = fromConn || activeP2PConn;
-    if (targetConn && targetConn.open) {
+    const sendGuestInfo = () => {
+      if (netplayConnected || !targetConn || !isPeerConnOpen(targetConn)) return;
       try {
         targetConn.send({
           type: "guest_info",
           slot: myPlayerId,
-          name: myName,
-          sramBase64: uint8ToBase64(mySram)
+          name: myName
+        });
+      } catch(e) {}
+    };
+    sendGuestInfo();
+    stopP2PHandshakeTimer();
+    p2pHandshakeTimer = setInterval(sendGuestInfo, 1000);
+
+    // Se abbiamo un salvataggio reale non vuoto, invialo in modo separato e compatto
+    if (!isSramEmpty(mySram) && targetConn && isPeerConnOpen(targetConn)) {
+      try {
+        targetConn.send({
+          type: "guest_sram",
+          slot: myPlayerId,
+          payload: encodeSramPayload(mySram)
         });
       } catch(e) {}
     }
-
-    // Invia guest_info periodicamente finche non arriva conferma dall'Host
-    stopP2PHandshakeTimer();
-    p2pHandshakeTimer = setInterval(() => {
-      if (netplayConnected || !targetConn || !targetConn.open) return;
-      try {
-        targetConn.send({
-          type: "guest_info",
-          slot: myPlayerId,
-          name: myName,
-          sramBase64: uint8ToBase64(mySram)
-        });
-      } catch(e) {}
-    }, 2000);
   } else if (msg.type === "guest_info" && myPlayerId === 1) {
-    // Ricevuto dall'Host: memorizza nome e SRAM del guest e segna come pronto
+    // Ricevuto dall'Host: memorizza nome del guest e segna come pronto
     const targetSlot = msg.slot || (fromConn && fromConn._assignedSlot);
-    const g = connectedGuests.find(x => x.conn === fromConn || x.slot === targetSlot);
+    let g = connectedGuests.find(x => x.conn === fromConn || x.slot === targetSlot);
+    if (!g && fromConn) {
+      g = { slot: targetSlot || (connectedGuests.length + 2), conn: fromConn, name: msg.name, sram: null, ready: true };
+      connectedGuests.push(g);
+    }
     if (g) {
       if (msg.name) g.name = msg.name;
-      if (msg.sramBase64) g.sram = base64ToUint8(msg.sramBase64);
       g.ready = true;
       if (fromConn) g.conn = fromConn;
     }
@@ -2431,22 +2476,29 @@ function handleP2PControlMessage(msg, fromConn) {
     } catch(e) {}
     updateHostLobbyUi();
     broadcastLobbyRoster();
+  } else if (msg.type === "guest_sram" && myPlayerId === 1) {
+    const targetSlot = msg.slot || (fromConn && fromConn._assignedSlot);
+    const g = connectedGuests.find(x => x.conn === fromConn || x.slot === targetSlot);
+    if (g && msg.payload) {
+      g.sram = decodeSramPayload(msg.payload);
+    }
   } else if (msg.type === "guest_info_ack" && myPlayerId >= 2) {
     // Guest riceve conferma dall'Host: ferma il timer di reinvio di guest_info
     stopP2PHandshakeTimer();
-    setNotice(joinStatusNotice, `Pronto nella Stanza [${currentRoomCode}]!\nIn attesa che l'Host avvii la partita...`);
+    const waitNotice = document.getElementById("joinWaitingHostNotice");
+    if (waitNotice) waitNotice.style.display = "block";
+    setNotice(joinStatusNotice, `Pronto nella Stanza [${currentRoomCode}] come Giocatore ${myPlayerId}!\nIn attesa che l'Host avvii la partita...`);
   } else if (msg.type === "lobby_roster" && myPlayerId >= 2) {
     // Aggiornamento roster dei giocatori nella stanza (lato Guest)
     stopP2PHandshakeTimer();
     updateGuestLobbyUi(msg);
-    setNotice(joinStatusNotice, `Sei nella Stanza [${currentRoomCode}] come Giocatore ${myPlayerId}!\nIn attesa che l'Host avvii la partita...`);
   } else if (msg.type === "guest_hello" && myPlayerId === 1 && !netplayConnected) {
     // Guest richiede lobby_welcome
     const g = connectedGuests.find(x => x.conn === fromConn);
     const targetSlot = (g && g.slot) || (fromConn && fromConn._assignedSlot) || 2;
     const hostInput = document.getElementById("hostPlayerName");
     const hostName = (hostInput && hostInput.value.trim()) || "Host";
-    if (fromConn && fromConn.open) {
+    if (fromConn && isPeerConnOpen(fromConn)) {
       try {
         fromConn.send({
           type: "lobby_welcome",
@@ -2459,6 +2511,12 @@ function handleP2PControlMessage(msg, fromConn) {
     }
   } else if (msg.type === "start_multi_game") {
     // Avvio effettivo della partita sincronizzata lanciato dall'Host
+    try {
+      const respConn = fromConn || activeP2PConn;
+      if (respConn && isPeerConnOpen(respConn)) {
+        respConn.send({ type: "start_game_ack", slot: myPlayerId });
+      }
+    } catch(e) {}
     if (netplayConnected) return;
     stopP2PHandshakeTimer();
     clearGuestJoinTimeout();
@@ -2479,6 +2537,10 @@ function handleP2PControlMessage(msg, fromConn) {
     netplayModal.style.display = "none";
     activeNetplayBanner.style.display = "block";
     activeNetplayDetail.innerText = `Collegato come Giocatore ${myPlayerId} di ${totalPlayers} (${netplayRoomSpeed}x Speed - P2P Diretto).`;
+  } else if (msg.type === "start_game_ack" && myPlayerId === 1) {
+    const slot = msg.slot;
+    const g = connectedGuests.find(x => x.slot === slot || x.conn === fromConn);
+    if (g) g.started = true;
   } else if (msg.type === "room_full") {
     setNotice(joinStatusNotice, `[ERRORE] ${msg.message || 'La stanza è al completo (max 4 giocatori)'}`, true);
     if (activeP2PConn) { try { activeP2PConn.close(); } catch(e) {} }
@@ -3381,7 +3443,7 @@ if (btnHostStartGame) {
       showInGameNotice("[ROM] Carica prima il file .gba con il tasto '[ROM] Carica .gba' prima di avviare!", 6000);
       return;
     }
-    const readyGuests = connectedGuests.filter(g => g.ready && g.conn && g.conn.open);
+    const readyGuests = connectedGuests.filter(g => g.ready && (!g.conn || isPeerConnOpen(g.conn)));
     if (readyGuests.length === 0) {
       showInGameNotice("[AVVISO] Nessun compagno e ancora pronto. Attendi che il badge sia verde 'Pronto'.", 4000);
       return;
@@ -3391,7 +3453,7 @@ if (btnHostStartGame) {
     persistSram(hostSram);
 
     const sramsMap = {
-      1: uint8ToBase64(hostSram)
+      1: encodeSramPayload(hostSram)
     };
     for (const g of readyGuests) {
       let gSram = g.sram;
@@ -3399,27 +3461,46 @@ if (btnHostStartGame) {
         gSram = new Uint8Array(SRAM_SIZE);
         gSram.fill(0xff);
       }
-      sramsMap[g.slot] = uint8ToBase64(gSram);
+      sramsMap[g.slot] = encodeSramPayload(gSram);
     }
 
     netplayRtcEpoch = Math.floor(Date.now() / 1000);
     netplayRoomSpeed = parseInt(document.getElementById("hostRoomSpeed").value, 10) || 1;
     setSpeed(netplayRoomSpeed);
 
-    for (const g of readyGuests) {
-      try {
-        g.conn.send({
-          type: "start_multi_game",
-          totalPlayers: totalPlayers,
-          assignedSlot: g.slot,
-          rtcEpoch: netplayRtcEpoch,
-          roomSpeed: netplayRoomSpeed,
-          srams: sramsMap
-        });
-      } catch (e) {
-        console.warn("Error sending start_multi_game to guest:", e);
+    const sendStartToAll = () => {
+      for (const g of readyGuests) {
+        if (g.conn && isPeerConnOpen(g.conn) && !g.started) {
+          try {
+            g.conn.send({
+              type: "start_multi_game",
+              totalPlayers: totalPlayers,
+              assignedSlot: g.slot,
+              rtcEpoch: netplayRtcEpoch,
+              roomSpeed: netplayRoomSpeed,
+              srams: sramsMap
+            });
+          } catch (e) {
+            console.warn("Error sending start_multi_game to guest:", e);
+          }
+        }
       }
-    }
+    };
+
+    // Invio immediato
+    sendStartToAll();
+
+    // Timer di sicurezza (resend per 4 secondi per garantire che nessun pacchetto vada perso)
+    let resendCount = 0;
+    const startResendTimer = setInterval(() => {
+      resendCount++;
+      const pending = readyGuests.some(g => !g.started);
+      if (!pending || resendCount >= 4) {
+        clearInterval(startResendTimer);
+        return;
+      }
+      sendStartToAll();
+    }, 1000);
 
     const chosenView = document.getElementById("hostScreenView").value;
     startNetplayMultiCore(totalPlayers, 1, sramsMap, chosenView);
