@@ -807,6 +807,33 @@ function uint8ToBase64(bytes) {
   return window.btoa(parts.join(""));
 }
 
+// PackBits: c<128 -> c+1 byte letterali; c>=128 -> il byte seguente ripetuto (c-128)+3 volte. Un .sav da 128 KB
+// e' quasi tutto 0xFF: scende a pochi KB. Caso peggiore +0,8%.
+function sramPack(u8) {
+  const out = []; const n = u8.length; let i = 0;
+  while (i < n) {
+    let j = i + 1;
+    while (j < n && u8[j] === u8[i] && j - i < 130) j++;
+    if (j - i >= 3) { out.push(128 + (j - i - 3), u8[i]); i = j; continue; }
+    let k = i; const lim = Math.min(n, i + 128);
+    while (k < lim && !(k + 2 < n && u8[k] === u8[k + 1] && u8[k] === u8[k + 2])) k++;
+    if (k === i) k = i + 1;
+    out.push(k - i - 1); for (let q = i; q < k; q++) out.push(u8[q]);
+    i = k;
+  }
+  return new Uint8Array(out);
+}
+function sramUnpack(packed) {
+  const src = new Uint8Array(packed); const out = new Uint8Array(SRAM_SIZE); let o = 0;
+  for (let i = 0; i < src.length && o < SRAM_SIZE;) {
+    const c = src[i++];
+    if (c < 128) { for (let q = 0; q <= c && o < SRAM_SIZE; q++) out[o++] = src[i++]; }
+    else { const v = src[i++]; for (let q = 0; q < c - 125 && o < SRAM_SIZE; q++) out[o++] = v; }
+  }
+  return o === SRAM_SIZE ? out : null;
+}
+const sramFromWire = (x) => (typeof x === "string" ? base64ToUint8(x) : sramUnpack(x));
+
 // Esegue un lavoro pesante (salvataggi) quando il thread e' libero, non nel mezzo di un frame.
 function deferHeavyWork(fn) {
   const run = () => { try { fn(); } catch (e) { console.warn("[deferred]", e); } };
@@ -1247,7 +1274,29 @@ function startNetplayMultiCore(sramListOrHostSram, arg2, arg3, arg4) {
   }
 
   if (modeSelect) modeSelect.disabled = true;
+  isRunning = !netHoldStart;   // in attesa del "go": nessuno parte prima che tutti abbiano caricato
+  if (netHoldStart) showCanvasOverlay("[...]", "Avvio sincronizzato...", "In attesa che tutti i giocatori carichino il gioco", "Partenza simultanea per tutti", null, true);
+}
+
+// Barriera di avvio. Prima l'host partiva subito e restava in stallo mentre i guest ricevevano ~700 KB di
+// salvataggi e caricavano 4 ROM: oltre 10 s = "connessione persa". Ora tutti caricano in pausa, poi "go".
+function netGo() {
+  if (isRunning) return;
+  lastPumpTime = performance.now(); pumpDebtMs = 0;
+  hideCanvasOverlay();
   isRunning = true;
+}
+function netHostTryGo(force) {
+  if (!netHostLoaded || netGoSent) return;
+  if (!force && !Object.values(connectedGuests).every((g) => g.coreReady)) return;
+  netGoSent = true; clearTimeout(netGoTimer);
+  for (const [slot, g] of Object.entries(connectedGuests)) {
+    if (!g.coreReady) handleGuestDisconnect(parseInt(slot, 10));   // troppo lento: non blocca gli altri
+  }
+  broadcastToGuests({ type: "go" });
+  let half = 0;
+  for (const x of netPeerRtt.values()) half = Math.max(half, x.rtt / 2);
+  setTimeout(netGo, Math.min(half, 150));   // l'host parte quando il "go" arriva ai guest
 }
 
 // Frame Timing and Animation Loop
@@ -1285,6 +1334,7 @@ let netRttMs = 0, netRttDev = 0, netRttSamples = 0, netRttMin = 0;
 let netPingTimer = null;
 let netPeerRtt = new Map();           // solo host: RTT/jitter di OGNI guest (prima: un'unica media mescolata)
 let netHostDelay = 0;                 // solo guest: delay minimo raccomandato dall'host (copre guest->host->guest)
+let netHoldStart = false, netHostLoaded = false, netGoSent = false, netGoTimer = null;
 let netEmuMs = 0;                     // costo medio (ms) di un passo di emulazione: distingue CPU da rete
 let netLastDelayChange = 0;
 let netStalling = false, netStallStart = 0, netOverlayLevel = 0;
@@ -1445,6 +1495,7 @@ window.gbaNetDebug = () => ({
   samples: netRttSamples, hostDelay: netHostDelay,
   peers: [...netPeerRtt.values()].map((x) => ({ rtt: Math.round(x.rtt), jitter: Math.round(x.dev) })),
   // se emuMs si avvicina a 16.7 il collo di bottiglia e' la CPU, non la rete
+  callsPerStep: coreStepsTotal ? +(coreCallsTotal / coreStepsTotal).toFixed(2) : null,   // ~1.5 = il bug del 65% era attivo
   emuMs: +netEmuMs.toFixed(1), cpuPct: Math.round(netEmuMs / GBA_FRAME_MS * 100),
   stalls: netStallCount, stallMsTotal: Math.round(netStallMsTotal), stallMsMax: Math.round(netStallMsMax),
   frame: totalFramesSimulated, maxRemoteFrame,
@@ -1504,14 +1555,31 @@ const CORE_MAX_CALLS_PER_FRAME = 4;
 let coreFrameCounterReliable = true;
 let coreFrameCounterStuck = 0;
 
+// run_frame avanza ~0.65 frame per chiamata con giochi reali (misurato in v2.6): contarla come "1 frame"
+// fa girare il gioco al ~65% (e audio a scatti). Si richiama finche' il contatore del core 0 avanza.
+// Core 0 per TUTTI i client: il numero di chiamate dipende solo dallo stato emulato, quindi resta deterministico.
+let coreCallsTotal = 0, coreStepsTotal = 0;
 function stepCoreOneFrame() {
   const M = window.Module;
   if (!M) return 1;
-  M._mgba_demo_run_frame();
-  if (typeof M._mgba_demo_equalize_frames === "function") {
-    M._mgba_demo_equalize_frames();
+  const getF = M._mgba_demo_get_frame;
+  const eq = M._mgba_demo_equalize_frames;
+  if (!coreFrameCounterReliable || typeof getF !== "function") {
+    M._mgba_demo_run_frame();
+    if (typeof eq === "function") eq();
+    return 1;
   }
-  return 1;
+  const f0 = getF(0);
+  let calls = 0;
+  do {
+    M._mgba_demo_run_frame();
+    if (typeof eq === "function") eq();
+    calls++;
+  } while (getF(0) === f0 && calls < CORE_MAX_CALLS_PER_FRAME);
+  coreCallsTotal += calls; coreStepsTotal++;
+  if (getF(0) === f0) { if (++coreFrameCounterStuck > 120) coreFrameCounterReliable = false; }  // contatore inutilizzabile: si torna a 1 chiamata
+  else coreFrameCounterStuck = 0;
+  return calls;
 }
 
 // Fa avanzare l'emulazione in base al TEMPO REALE trascorso (usato da rAF e dal worker di fallback).
@@ -1695,7 +1763,7 @@ function runSingleSimulationFrame() {
   if (totalFramesSimulated > 0 && nowWall - lastAutoSavestateWallClock >= 45000) {
     lastAutoSavestateWallClock = nowWall;
     deferHeavyWork(() => {
-      createEmergencySavestate();
+      createEmergencySavestate(true);
     });
   }
 
@@ -2233,10 +2301,13 @@ function handleHostControlMessage(msg, slot, conn) {
   } else if (msg.type === "guest_bundle") {
     console.log(`[WebRTC Host] Ricevuto guest_bundle da Giocatore ${slot}`);
     if (connectedGuests[slot]) {
-      connectedGuests[slot].sram = base64ToUint8(msg.sramBase64);
+      connectedGuests[slot].sram = msg.sram ? sramUnpack(msg.sram) : base64ToUint8(msg.sramBase64);
     }
     try { conn.send({ type: "bundle_ack" }); } catch(e) {}
     checkAndLaunchHostGame();
+  } else if (msg.type === "core_ready") {
+    if (connectedGuests[slot]) connectedGuests[slot].coreReady = true;
+    netHostTryGo(false);
   } else if (msg.type === "change_speed") {
     setSpeed(msg.speed || 1);
     broadcastToGuests({ type: "change_speed", speed: msg.speed || 1 }, slot);
@@ -2257,10 +2328,10 @@ function checkAndLaunchHostGame() {
   netplayPlayerCount = totalPlayers;
 
   const sramMap = {
-    1: uint8ToBase64(hostSramForMulti)
+    1: sramPack(hostSramForMulti)
   };
   for (const [slotStr, g] of Object.entries(connectedGuests)) {
-    sramMap[slotStr] = uint8ToBase64(g.sram);
+    sramMap[slotStr] = sramPack(g.sram);
   }
 
   // Notifica a tutti i guest di iniziare con la mappa completa dei salvataggi
@@ -2283,7 +2354,14 @@ function checkAndLaunchHostGame() {
   }
 
   const chosenView = document.getElementById("hostScreenView").value;
-  startNetplayMultiCore(srams, 1, totalPlayers, chosenView);
+  netGoSent = false; netHostLoaded = false;
+  for (const g of Object.values(connectedGuests)) g.coreReady = false;
+  netHoldStart = true;
+  try { startNetplayMultiCore(srams, 1, totalPlayers, chosenView); } finally { netHoldStart = false; }
+  netHostLoaded = true;
+  clearTimeout(netGoTimer);
+  netGoTimer = setTimeout(() => netHostTryGo(true), 30000);
+  netHostTryGo(false);
 
   netplayConnected = true;
   window.netplayConnected = true;
@@ -2404,7 +2482,7 @@ function handleGuestControlMessage(msg, conn) {
       conn.send({
         type: "guest_bundle",
         player_id: myPlayerId,
-        sramBase64: uint8ToBase64(mySram)
+        sram: sramPack(mySram)
       });
     } catch(e) {}
   } else if (msg.type === "start_game") {
@@ -2420,7 +2498,7 @@ function handleGuestControlMessage(msg, conn) {
     const srams = [];
     for (let p = 1; p <= 4; p++) {
       if (msg.sram_bundles && msg.sram_bundles[p]) {
-        srams.push(base64ToUint8(msg.sram_bundles[p]));
+        srams.push(sramFromWire(msg.sram_bundles[p]) || (() => { const b = new Uint8Array(SRAM_SIZE); b.fill(0xff); return b; })());
       } else {
         const blank = new Uint8Array(SRAM_SIZE); blank.fill(0xff);
         srams.push(blank);
@@ -2428,7 +2506,10 @@ function handleGuestControlMessage(msg, conn) {
     }
 
     const chosenView = document.getElementById("joinScreenView").value;
-    startNetplayMultiCore(srams, myPlayerId, msg.total_players, chosenView);
+    netHoldStart = true;
+    try { startNetplayMultiCore(srams, myPlayerId, msg.total_players, chosenView); } finally { netHoldStart = false; }
+    try { conn.send({ type: "core_ready" }); } catch (e) {}
+    setTimeout(() => { if (!isRunning && netplayConnected) netGo(); }, 45000);   // rete di sicurezza se il "go" si perde
 
     netplayConnected = true;
     window.netplayConnected = true;
@@ -2437,6 +2518,8 @@ function handleGuestControlMessage(msg, conn) {
     netplayModal.style.display = "none";
     activeNetplayBanner.style.display = "block";
     activeNetplayDetail.innerText = `Collegato come Giocatore ${myPlayerId}/${msg.total_players} (${netplayRoomSpeed}x Speed - P2P Star).`;
+  } else if (msg.type === "go") {
+    netGo();
   } else if (msg.type === "bundle_ack") {
     stopP2PHandshakeTimer();
   } else if (msg.type === "player_left") {
@@ -2571,7 +2654,7 @@ if (btnLoadRom && inputRomFile) {
 const btnSaveBrowserNow = document.getElementById("btnSaveBrowserNow");
 if (btnSaveBrowserNow) {
   btnSaveBrowserNow.addEventListener("click", () => {
-    const activeIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+    const activeIdx = (currentMode === "netplay" ? myPlayerId - 1 : 0);
     const sram = exportCurrentSram(activeIdx);
     if (!sram || sram.length === 0 || isSramEmpty(sram)) {
       showInGameNotice("[AVVISO] Nessun dato salvato in gioco al momento. Salva prima dal menu del gioco (START -> Salva).", 5000);
@@ -2592,7 +2675,7 @@ if (btnSaveBrowserNow) {
 // Save to Browser on Page Refresh or Tab Close
 window.addEventListener("beforeunload", () => {
   if (isRunning && window.Module) {
-    const activeIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+    const activeIdx = (currentMode === "netplay" ? myPlayerId - 1 : 0);
     const sram = exportCurrentSram(activeIdx);
     if (sram && sram.length > 0 && !isSramEmpty(sram)) {
       saveSramToBrowserStorage(loadedRomBaseName, sram);
@@ -2602,7 +2685,7 @@ window.addEventListener("beforeunload", () => {
 
 window.addEventListener("pagehide", () => {
   if (isRunning && window.Module) {
-    const activeIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+    const activeIdx = (currentMode === "netplay" ? myPlayerId - 1 : 0);
     const sram = exportCurrentSram(activeIdx);
     if (sram && sram.length > 0 && !isSramEmpty(sram)) {
       saveSramToBrowserStorage(loadedRomBaseName, sram);
@@ -2612,7 +2695,7 @@ window.addEventListener("pagehide", () => {
 
 // Save Management Handlers
 btnExportSave.addEventListener("click", () => {
-  const activeIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+  const activeIdx = (currentMode === "netplay" ? myPlayerId - 1 : 0);
   const sram = exportCurrentSram(activeIdx);
   if (!sram || sram.length === 0) {
     showInGameNotice("[AVVISO] Nessun dato di salvataggio disponibile ancora.", 4000);
@@ -2760,7 +2843,7 @@ function deactivateEmergencyRecoveryMode() {
 
 function createEmergencySavestate(isAuto = false) {
   if (!window.Module || !isRunning) return;
-  const activeIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+  const activeIdx = (currentMode === "netplay" ? myPlayerId - 1 : 0);
   const stateBytes = exportCurrentState(activeIdx);
   if (!stateBytes || stateBytes.length === 0) {
     showSavestateNotice("Errore durante l'esportazione dello stato mGBA.", false);
@@ -2770,7 +2853,7 @@ function createEmergencySavestate(isAuto = false) {
   window.lastEmergencyStateBytes = stateBytes;
 
   try {
-    localStorage.setItem("last_emergency_savestate", uint8ToBase64(stateBytes));
+    if (!isAuto) localStorage.setItem("last_emergency_savestate", uint8ToBase64(stateBytes));   // quello automatico resta in RAM (niente blocco da 100 ms)
     const meta = {
       timestamp: Date.now(),
       frame: totalFramesSimulated,
@@ -2798,7 +2881,7 @@ function restoreEmergencySavestate() {
     return;
   }
   const stateBytes = window.lastEmergencyStateBytes || base64ToUint8(base64);
-  const activeIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+  const activeIdx = (currentMode === "netplay" ? myPlayerId - 1 : 0);
   const ok = importCurrentState(activeIdx, stateBytes);
   if (ok) {
     showSavestateNotice("[OK] Savestate di emergenza ripristinato con successo nel core!", true);
@@ -2881,7 +2964,7 @@ const btnExportSavestateFile = document.getElementById("btnExportSavestateFile")
 
 if (btnExportSavestateFile) {
   btnExportSavestateFile.addEventListener("click", () => {
-    const activeIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+    const activeIdx = (currentMode === "netplay" ? myPlayerId - 1 : 0);
     const state = exportCurrentState(activeIdx) || window.lastEmergencyStateBytes;
     if (!state) {
       showSavestateNotice("Nessun savestate da esportare.", false);
@@ -2912,7 +2995,7 @@ if (btnImportSavestateFile && inputSavestateFile) {
       }
       window.lastEmergencyStateBytes = bytes;
       localStorage.setItem("last_emergency_savestate", uint8ToBase64(bytes));
-      const activeIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+      const activeIdx = (currentMode === "netplay" ? myPlayerId - 1 : 0);
       importCurrentState(activeIdx, bytes);
       showSavestateNotice(`[OK] Snapshot (${(bytes.length / 1024).toFixed(1)} KB) caricato e applicato!`, true);
     };
@@ -2921,7 +3004,7 @@ if (btnImportSavestateFile && inputSavestateFile) {
 }
 
 function convertSavestateToSav() {
-  const activeIdx = currentMode === "netplay" && myPlayerId === 2 ? 1 : 0;
+  const activeIdx = (currentMode === "netplay" ? myPlayerId - 1 : 0);
   let sram = exportCurrentSram(activeIdx);
   if (isSramEmpty(sram)) {
     const base64 = localStorage.getItem("last_emergency_savestate");
@@ -3386,8 +3469,7 @@ if (btnHostStartGame) {
             assigned_player: slot,
             total_players: totalPlayers,
             room_speed: netplayRoomSpeed,
-            rtc_epoch: netplayRtcEpoch,
-            host_sram: uint8ToBase64(mySram)
+            rtc_epoch: netplayRtcEpoch
           });
         } catch(e) {}
       }
