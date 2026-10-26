@@ -1,5 +1,5 @@
 // Rebit mGBA Online - WebRTC P2P Netplay Driver (GitHub Pages Edition)
-// Full implementation with Save Management (.sav / SRAM) and 2-Player Link Cable via direct WebRTC DataChannel (signaling manuale, nessun broker: vedi p2p-link.js).
+// Full implementation with Save Management (.sav / SRAM) and 2-Player Link Cable via direct WebRTC DataChannel (PeerJS + STUN/TURN).
 
 window.Module = null;
 window.romBytes = null;
@@ -195,15 +195,11 @@ const tabHostContent = document.getElementById("tabHostContent");
 const tabJoinContent = document.getElementById("tabJoinContent");
 const btnStartHosting = document.getElementById("btnStartHosting");
 const hostWaitingArea = document.getElementById("hostWaitingArea");
-const hostOfferCode = document.getElementById("hostOfferCode");
-const hostAnswerInput = document.getElementById("hostAnswerInput");
-const btnHostConnect = document.getElementById("btnHostConnect");
-const joinAnswerCode = document.getElementById("joinAnswerCode");
-const btnCopyAnswerCode = document.getElementById("btnCopyAnswerCode");
 const generatedRoomCode = document.getElementById("generatedRoomCode");
 const btnCopyRoomCode = document.getElementById("btnCopyRoomCode");
 const btnCopyRoomLink = document.getElementById("btnCopyRoomLink");
 const hostStatusNotice = document.getElementById("hostStatusNotice");
+const btnHostStartGame = document.getElementById("btnHostStartGame");
 const btnJoinExistingRoom = document.getElementById("btnJoinExistingRoom");
 const joinRoomCode = document.getElementById("joinRoomCode");
 const joinStatusArea = document.getElementById("joinStatusArea");
@@ -1727,24 +1723,28 @@ function unpackGbrb(data) {
   return { origin, samples };
 }
 
-// Server ICE: SOLO STUN. Servono unicamente a scoprire il proprio indirizzo pubblico;
-// i dati di gioco non passano mai da loro. GitHub NON offre alcun servizio TURN (relay):
-// per le reti piu' ostili (NAT simmetrico / CGNAT) non esiste un fallback gratuito "dentro
-// GitHub". Se vuoi un relay devi aggiungere qui un TURN tuo, ad esempio:
-//   { urls: "turn:turn.example.com:3478", username: "utente", credential: "password" }
 const P2P_ICE_SERVERS = [
-  { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
-  { urls: "stun:stun.cloudflare.com:3478" },
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun2.l.google.com:19302" },
+  { urls: "stun:stun3.l.google.com:19302" },
+  { urls: "stun:stun4.l.google.com:19302" },
   { urls: "stun:global.stun.twilio.com:3478" },
+  { urls: "stun:stun.cloudflare.com:3478" },
+  // Free public TURN relay servers for fallback across NATs, 4G/5G, and restrictive firewalls
+  {
+    urls: [
+      "turn:openrelay.metered.ca:80",
+      "turn:openrelay.metered.ca:443",
+      "turn:openrelay.metered.ca:443?transport=tcp"
+    ],
+    username: "openrelayproject",
+    credential: "openrelayproject"
+  }
 ];
-const P2P_CONNECT_TIMEOUT_MS = 40000;
-const HOST_BUNDLE_RESEND_MS = 4000;
-const GUEST_HELLO_RESEND_MS = 2000;
 
 let p2pHandshakeTimer = null;
 let guestJoinTimeoutTimer = null;
-let guestConnected = false;
-let guestPlayerName = "Compagno (P2)";
 
 function stopP2PHandshakeTimer() {
   if (p2pHandshakeTimer) {
@@ -1760,154 +1760,21 @@ function clearGuestJoinTimeout() {
   }
 }
 
-function setNotice(el, text, isError = false) {
-  if (!el) return;
-  el.textContent = text;
-  el.style.whiteSpace = "pre-line";
-  el.style.color = isError ? "#f87171" : "";
-}
-
-function getLocalSramForHandshake() {
-  let mySram = window.localSram;
-  if (!mySram || mySram.length !== SRAM_SIZE) mySram = exportCurrentSram(0);
-  if (!mySram || mySram.length !== SRAM_SIZE) {
-    mySram = new Uint8Array(SRAM_SIZE);
-    mySram.fill(0xff);
-  }
-  window.localSram = mySram;
-  return mySram;
-}
-
-function describeIceFailure(info) {
-  const c = (info && info.candidates) || {};
-  let why;
-  if (!c.srflx && !c.relay && !c.v6) {
-    why = "Il browser non ha trovato un indirizzo pubblico (STUN bloccato da firewall, VPN o estensione anti-WebRTC?).";
-  } else {
-    why = "I due router non riescono a stabilire un collegamento diretto (probabile NAT simmetrico/CGNAT, tipico di molte reti mobili). GitHub non offre un relay TURN.";
-  }
-  return "[ERRORE] Connessione P2P non riuscita.\n" + why +
-    "\nProva: hotspot del telefono su uno dei due, una rete con IPv6, oppure disattiva VPN/estensioni WebRTC." +
-    "\nFate i passaggi in fretta: dopo che il compagno genera la risposta, incollatela all'Host entro ~30 secondi." +
-    "\nPoi ripartite con un NUOVO invito.";
-}
-
-function resetNetplayButtons(role) {
-  if (role === 1) {
-    btnStartHosting.style.display = "block";
-    btnHostConnect.disabled = true;
-  } else {
-    btnJoinExistingRoom.style.display = "block";
-  }
-}
-
-let lastBundleSentAt = 0;
-
-function resetHostLobbyUi() {
-  guestConnected = false;
-  guestPlayerName = "Compagno (P2)";
-  const hostInput = document.getElementById("hostPlayerName");
-  const hostName = (hostInput && hostInput.value.trim()) || "Host";
-  const p1NameEl = document.getElementById("hostLobbyP1Name");
-  if (p1NameEl) p1NameEl.textContent = `${hostName} (Tu)`;
-
-  const countBadge = document.getElementById("hostLobbyCountBadge");
-  if (countBadge) countBadge.textContent = "1 / 2 Giocatori";
-
-  const slot2 = document.getElementById("hostLobbySlot2");
-  const p2Name = document.getElementById("hostLobbyP2Name");
-  const p2Status = document.getElementById("hostLobbyP2Status");
-  if (slot2) slot2.className = "lobby-player-row empty";
-  if (p2Name) {
-    p2Name.textContent = "In attesa compagno...";
-    p2Name.style.color = "#71717a";
-  }
-  if (p2Status) {
-    p2Status.className = "lobby-status-badge lobby-status-waiting";
-    p2Status.textContent = "In attesa";
-  }
-
-  const btnStart = document.getElementById("btnHostStartGame");
-  if (btnStart) {
-    btnStart.disabled = true;
-    btnStart.style.background = "#374151";
-    btnStart.style.borderColor = "#4b5563";
-    btnStart.style.cursor = "not-allowed";
-    btnStart.textContent = "[▶] In attesa del compagno...";
-  }
-}
-
-function updateHostLobbyWithGuest(guestName) {
-  guestConnected = true;
-  guestPlayerName = guestName || "Compagno (P2)";
-
-  const countBadge = document.getElementById("hostLobbyCountBadge");
-  if (countBadge) countBadge.textContent = "2 / 2 Giocatori";
-
-  const slot2 = document.getElementById("hostLobbySlot2");
-  const p2Name = document.getElementById("hostLobbyP2Name");
-  const p2Status = document.getElementById("hostLobbyP2Status");
-  if (slot2) slot2.className = "lobby-player-row connected";
-  if (p2Name) {
-    p2Name.textContent = guestPlayerName;
-    p2Name.style.color = "#f4f4f5";
-  }
-  if (p2Status) {
-    p2Status.className = "lobby-status-badge lobby-status-ready";
-    p2Status.textContent = "Pronto";
-  }
-
-  const btnStart = document.getElementById("btnHostStartGame");
-  if (btnStart) {
-    btnStart.disabled = false;
-    btnStart.style.background = "#15803d";
-    btnStart.style.borderColor = "#22c55e";
-    btnStart.style.cursor = "pointer";
-    btnStart.textContent = "[▶] Avvia Partita (2 Giocatori)";
-  }
-
-  setNotice(hostStatusNotice, `Compagno collegato (${guestPlayerName})!\nClicca su [▶] Avvia Partita per iniziare.`);
-}
-
-function updateGuestLobbyUi(hostName) {
-  const countBadge = document.getElementById("joinLobbyCountBadge");
-  const listEl = document.getElementById("joinLobbyPlayerList");
-  const waitNotice = document.getElementById("joinWaitingHostNotice");
-  if (waitNotice) waitNotice.style.display = "block";
-  if (countBadge) countBadge.textContent = "2 / 2 Giocatori";
-
-  const joinInput = document.getElementById("joinPlayerName");
-  const myName = (joinInput && joinInput.value.trim()) || "Guest";
-
-  if (listEl) {
-    listEl.innerHTML = `
-      <div class="lobby-player-row connected">
-        <span class="lobby-player-tag lobby-tag-p1">P1</span>
-        <span style="font-weight: 600; flex: 1; margin-left: 8px;">${hostName || 'Host'}</span>
-        <span class="lobby-status-badge lobby-status-ready">Host</span>
-      </div>
-      <div class="lobby-player-row connected">
-        <span class="lobby-player-tag lobby-tag-p2">P2</span>
-        <span style="font-weight: 600; flex: 1; margin-left: 8px;">${myName} (Tu)</span>
-        <span class="lobby-status-badge lobby-status-ready">Pronto</span>
-      </div>
-    `;
-  }
-}
-
 function setupDataConnection(conn, role) {
   activeP2PConn = conn;
   myPlayerId = role;
   remotePlayerId = myPlayerId === 1 ? 2 : 1;
-  const notice = role === 1 ? hostStatusNotice : joinStatusNotice;
 
   conn.on("iceStateChanged", (s) => {
     console.log(`[WebRTC ICE] State (${role === 1 ? 'Host' : 'Guest'}):`, s);
-    if (netplayConnected) return;
+    const notice = role === 1 ? hostStatusNotice : joinStatusNotice;
+    if (!notice) return;
     if (s === "checking") {
-      setNotice(notice, "Negoziazione dei router in corso (STUN)...");
+      notice.innerText = "Negoziazione router in corso (STUN/TURN)...";
     } else if (s === "connected" || s === "completed") {
-      setNotice(notice, "Router collegati! Apertura canale di gioco...");
+      notice.innerText = "Router connessi con successo! Apertura canale di gioco...";
+    } else if (s === "failed") {
+      notice.innerHTML = "<span style='color:#f87171'>Connessione diretta P2P fallita. Tentativo relay TURN...</span>";
     }
   });
 
@@ -1915,32 +1782,37 @@ function setupDataConnection(conn, role) {
     console.log(`[WebRTC P2P] DataChannel aperto con successo! Ruolo: Giocatore ${myPlayerId}`);
     clearGuestJoinTimeout();
     if (myPlayerId === 1) {
-      setNotice(hostStatusNotice, "Compagno connesso al canale! In attesa di pronto...");
+      // Host: Compagno connesso! Abilita il pulsante "Avvia Partita"
+      hostStatusNotice.innerText = "Compagno connesso! Clicca su '[▶] Avvia Partita' per iniziare.";
+      if (btnHostStartGame) {
+        btnHostStartGame.disabled = false;
+        btnHostStartGame.style.background = "#15803d";
+        btnHostStartGame.style.borderColor = "#22c55e";
+        btnHostStartGame.style.cursor = "pointer";
+        btnHostStartGame.innerText = "[▶] Avvia Partita";
+      }
     } else {
-      const joinInput = document.getElementById("joinPlayerName");
-      const myName = (joinInput && joinInput.value.trim()) || "Guest";
-      const sendJoin = () => {
+      // Guest: Annuncia disponibilita all'Host e attende che l'Host avvii
+      joinStatusNotice.innerText = "Connesso all'Host! In attesa che l'Host avvii la partita...";
+      const sendGuestHello = () => {
         if (netplayConnected || !activeP2PConn || !activeP2PConn.open) return;
-        activeP2PConn.send({
-          type: "lobby_join",
-          name: myName
-        });
+        console.log("[WebRTC Guest] Invio guest_hello...");
+        activeP2PConn.send({ type: "guest_hello" });
       };
-      sendJoin();
+      sendGuestHello();
       stopP2PHandshakeTimer();
-      p2pHandshakeTimer = setInterval(sendJoin, 1500);
-      setNotice(joinStatusNotice, "Collegato all'Host! Registrazione nella stanza...");
+      p2pHandshakeTimer = setInterval(sendGuestHello, 1000);
     }
   });
 
   conn.on("data", (data) => {
-    const isBin = (typeof P2P !== "undefined" && P2P.isBinary && P2P.isBinary(data)) ||
-      data instanceof ArrayBuffer || (data && typeof data === "object" && (Object.prototype.toString.call(data) === "[object ArrayBuffer]" || ArrayBuffer.isView(data)));
-    if (isBin) {
-      const buf = data instanceof ArrayBuffer ? data : (ArrayBuffer.isView(data) ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data);
-      if (netPacketIsPing(buf)) { netHandlePing(buf); return; }
+    if (data instanceof ArrayBuffer) {
+      if (typeof netPacketIsPing === "function" && netPacketIsPing(data)) {
+        netHandlePing(data);
+        return;
+      }
       try {
-        const { origin, payload } = unpackRbal(buf);
+        const { origin, payload } = unpackRbal(data);
         if (payload && payload.byteLength >= 48) {
           const gbrb = unpackGbrb(payload);
           if (gbrb && gbrb.samples && gbrb.samples.length > 0) {
@@ -1958,12 +1830,9 @@ function setupDataConnection(conn, role) {
       } catch (err) {
         console.warn("[WebRTC P2P] Error reading peer input packet:", err);
       }
-    } else if (data && typeof data === "object") {
-      handleP2PControlMessage(data);
-    } else if (typeof data === "string") {
-      try {
-        handleP2PControlMessage(JSON.parse(data));
-      } catch (e) {}
+    } else if (typeof data === "object" || typeof data === "string") {
+      const msg = typeof data === "string" ? JSON.parse(data) : data;
+      handleP2PControlMessage(msg);
     }
   });
 
@@ -1973,11 +1842,17 @@ function setupDataConnection(conn, role) {
     clearGuestJoinTimeout();
     if (!netplayConnected) {
       if (role === 1) {
-        resetHostLobbyUi();
-        setNotice(hostStatusNotice, "Il compagno si è disconnesso dalla lobby.\nIn attesa di una nuova connessione...", true);
+        hostStatusNotice.innerText = "Il compagno si è disconnesso. In attesa di una nuova connessione...";
+        if (btnHostStartGame) {
+          btnHostStartGame.disabled = true;
+          btnHostStartGame.style.background = "#374151";
+          btnHostStartGame.style.borderColor = "#4b5563";
+          btnHostStartGame.style.cursor = "not-allowed";
+          btnHostStartGame.innerText = "[▶] In attesa del compagno...";
+        }
       } else {
-        setNotice(notice, "Connessione chiusa dall'Host o caduta prima dell'avvio.", true);
-        resetNetplayButtons(role);
+        joinStatusNotice.innerHTML = "<span style='color:#f87171'>Connessione chiusa dall'Host o fallita.</span>";
+        btnJoinExistingRoom.style.display = "block";
       }
     } else {
       handleP2PDisconnect();
@@ -1985,46 +1860,45 @@ function setupDataConnection(conn, role) {
   });
 
   conn.on("error", (err) => {
-    console.warn("[WebRTC P2P] Errore connessione:", err);
+    console.warn("[WebRTC P2P] Errore DataConnection:", err);
     stopP2PHandshakeTimer();
     clearGuestJoinTimeout();
-    if (netplayConnected) return;
-    setNotice(notice, describeIceFailure(err), true);
-    resetNetplayButtons(role);
-    try { conn.close(); } catch (e) {}
+    if (!netplayConnected) {
+      if (role === 1) {
+        hostStatusNotice.innerText = `Errore di connessione: ${err.type || err}`;
+        if (btnHostStartGame) {
+          btnHostStartGame.disabled = true;
+          btnHostStartGame.style.background = "#374151";
+          btnHostStartGame.style.borderColor = "#4b5563";
+          btnHostStartGame.style.cursor = "not-allowed";
+          btnHostStartGame.innerText = "[▶] In attesa del compagno...";
+        }
+      } else {
+        joinStatusNotice.innerHTML = `<span style='color:#f87171'>Errore canale P2P: ${err.type || err}</span>`;
+        btnJoinExistingRoom.style.display = "block";
+      }
+    } else {
+      handleP2PDisconnect();
+    }
   });
 }
 
 function handleP2PControlMessage(msg) {
-  if (msg.type === "lobby_join" && myPlayerId === 1) {
-    // Ricevuto dall'Host dal Guest quando si collega al canale WebRTC
-    const guestName = msg.name || "Compagno";
-    updateHostLobbyWithGuest(guestName);
-
-    const hostInput = document.getElementById("hostPlayerName");
-    const hostName = (hostInput && hostInput.value.trim()) || "Host";
-    if (activeP2PConn && activeP2PConn.open) {
-      try {
-        activeP2PConn.send({
-          type: "lobby_welcome",
-          hostName: hostName,
-          roomCode: currentRoomCode
-        });
-      } catch (e) {}
+  if (msg.type === "guest_hello" && myPlayerId === 1) {
+    console.log("[WebRTC Host] Guest hello ricevuto!");
+    if (!netplayConnected) {
+      hostStatusNotice.innerText = "Compagno connesso! Clicca su '[▶] Avvia Partita' per iniziare.";
+      if (btnHostStartGame) {
+        btnHostStartGame.disabled = false;
+        btnHostStartGame.style.background = "#15803d";
+        btnHostStartGame.style.borderColor = "#22c55e";
+        btnHostStartGame.style.cursor = "pointer";
+        btnHostStartGame.innerText = "[▶] Avvia Partita";
+      }
     }
-  } else if (msg.type === "lobby_welcome" && myPlayerId === 2) {
-    // Ricevuto dal Guest quando l'Host conferma l'ingresso in lobby
-    stopP2PHandshakeTimer();
-    clearGuestJoinTimeout();
-    const hostName = msg.hostName || "Host";
-    const code = msg.roomCode || currentRoomCode;
-    updateGuestLobbyUi(hostName);
-    const waitNotice = document.getElementById("joinWaitingHostNotice");
-    if (waitNotice) waitNotice.style.display = "block";
-    setNotice(joinStatusNotice, `Pronto nella Stanza [${code}] con ${hostName}!\nIn attesa che l'Host avvii la partita...`);
   } else if (msg.type === "ready_and_bundle" && myPlayerId === 2) {
-    // Duplicato: il core e' gia' partito, rilanciarlo azzererebbe i frame e causerebbe desync.
     if (netplayConnected) return;
+    // Guest receives Host configuration & Host SRAM
     stopP2PHandshakeTimer();
     clearGuestJoinTimeout();
 
@@ -2032,9 +1906,15 @@ function handleP2PControlMessage(msg) {
     netplayRtcEpoch = msg.rtc_epoch || Math.floor(Date.now() / 1000);
     setSpeed(netplayRoomSpeed);
 
-    setNotice(joinStatusNotice, "Host pronto! Invio il mio salvataggio (.sav)...");
+    joinStatusNotice.innerText = "Host pronto! Invio il mio salvataggio (.sav)...";
 
-    const mySram = getLocalSramForHandshake();
+    let mySram = window.localSram;
+    if (!mySram || mySram.length !== SRAM_SIZE) mySram = exportCurrentSram(0);
+    if (!mySram || mySram.length !== SRAM_SIZE) {
+      mySram = new Uint8Array(SRAM_SIZE);
+      mySram.fill(0xff);
+    }
+    window.localSram = mySram;
     persistSram(mySram);
 
     const sendGuestBundle = () => {
@@ -2045,7 +1925,7 @@ function handleP2PControlMessage(msg) {
       });
     };
     sendGuestBundle();
-    p2pHandshakeTimer = setInterval(sendGuestBundle, HOST_BUNDLE_RESEND_MS);
+    p2pHandshakeTimer = setInterval(sendGuestBundle, 1000);
 
     const hostSram = base64ToUint8(msg.sramBase64);
     const guestSram = mySram;
@@ -2055,27 +1935,35 @@ function handleP2PControlMessage(msg) {
 
     netplayConnected = true;
     window.netplayConnected = true;
-    netStartPings();
-    netUpdateBadge();
+    if (typeof netStartPings === "function") netStartPings();
+    if (typeof netUpdateBadge === "function") netUpdateBadge();
     netplayModal.style.display = "none";
     activeNetplayBanner.style.display = "block";
     activeNetplayDetail.innerText = `Collegato come Giocatore 2 (${netplayRoomSpeed}x Speed - P2P Diretto).`;
   } else if (msg.type === "guest_bundle" && myPlayerId === 1) {
-    // Conferma sempre con bundle_ack, ma avvia il core una sola volta.
-    try { activeP2PConn.send({ type: "bundle_ack" }); } catch (e) {}
+    // Host receives Guest's SRAM
+    try {
+      activeP2PConn.send({ type: "bundle_ack" });
+    } catch (e) {}
+
     if (netplayConnected) return;
     stopP2PHandshakeTimer();
 
     const guestSram = base64ToUint8(msg.sramBase64);
-    const hostSram = getLocalSramForHandshake();
+    let hostSram = window.localSram;
+    if (!hostSram || hostSram.length !== SRAM_SIZE) hostSram = exportCurrentSram(0);
+    if (!hostSram || hostSram.length !== SRAM_SIZE) {
+      hostSram = new Uint8Array(SRAM_SIZE);
+      hostSram.fill(0xff);
+    }
 
     const chosenView = document.getElementById("hostScreenView").value;
     startNetplayMultiCore(hostSram, guestSram, 1, chosenView);
 
     netplayConnected = true;
     window.netplayConnected = true;
-    netStartPings();
-    netUpdateBadge();
+    if (typeof netStartPings === "function") netStartPings();
+    if (typeof netUpdateBadge === "function") netUpdateBadge();
     netplayModal.style.display = "none";
     activeNetplayBanner.style.display = "block";
     activeNetplayDetail.innerText = `Collegato come Giocatore 1 (${netplayRoomSpeed}x Speed - P2P Diretto).`;
@@ -2089,6 +1977,8 @@ function handleP2PControlMessage(msg) {
 function handleP2PDisconnect() {
   stopP2PHandshakeTimer();
   clearGuestJoinTimeout();
+  if (typeof netStopPings === "function") netStopPings();
+  if (typeof netUpdateBadge === "function") netUpdateBadge();
   if (isRecoveringSession) return;
   netplayConnected = false;
   window.netplayConnected = false;
@@ -2856,12 +2746,18 @@ function closeP2PLink() {
 function resetNetplayUi() {
   btnStartHosting.style.display = "block";
   hostWaitingArea.style.display = "none";
-  if (btnHostConnect) btnHostConnect.disabled = true;
   btnJoinExistingRoom.style.display = "block";
   joinStatusArea.style.display = "none";
+  if (btnHostStartGame) {
+    btnHostStartGame.disabled = true;
+    btnHostStartGame.style.background = "#374151";
+    btnHostStartGame.style.borderColor = "#4b5563";
+    btnHostStartGame.style.cursor = "not-allowed";
+    btnHostStartGame.innerText = "[▶] In attesa del compagno...";
+  }
 }
 
-btnStartHosting.addEventListener("click", async () => {
+btnStartHosting.addEventListener("click", () => {
   if (!window.romBytes) {
     showInGameNotice("[ROM] Carica prima il file .gba con il tasto '[ROM] Carica .gba' prima di creare la stanza!", 6000);
     return;
@@ -2879,10 +2775,24 @@ btnStartHosting.addEventListener("click", async () => {
   btnStartHosting.style.display = "none";
   hostWaitingArea.style.display = "block";
   if (generatedRoomCode) generatedRoomCode.innerText = currentRoomCode;
-  setNotice(hostStatusNotice, "Registrazione stanza online in corso...");
+  hostStatusNotice.innerText = "Registrazione stanza online in corso...";
 
-  closeP2PLink();
-  resetHostLobbyUi();
+  if (btnHostStartGame) {
+    btnHostStartGame.disabled = true;
+    btnHostStartGame.style.background = "#374151";
+    btnHostStartGame.style.borderColor = "#4b5563";
+    btnHostStartGame.style.cursor = "not-allowed";
+    btnHostStartGame.innerText = "[▶] In attesa del compagno...";
+  }
+
+  if (activeP2PConn) {
+    try { activeP2PConn.close(); } catch (e) {}
+    activeP2PConn = null;
+  }
+  if (peer) {
+    try { peer.destroy(); } catch (e) {}
+    peer = null;
+  }
 
   try {
     peer = new Peer(peerId, {
@@ -2892,7 +2802,7 @@ btnStartHosting.addEventListener("click", async () => {
 
     peer.on("open", (id) => {
       console.log("[WebRTC Host] Stanza registrata con ID:", id);
-      setNotice(hostStatusNotice, `Stanza [${currentRoomCode}] attiva! Invia il link o codice al compagno per giocare.`);
+      hostStatusNotice.innerText = `Stanza [${currentRoomCode}] attiva! Invia il link o codice al compagno per giocare.`;
     });
 
     peer.on("connection", (conn) => {
@@ -2901,35 +2811,24 @@ btnStartHosting.addEventListener("click", async () => {
         try { conn.close(); } catch(e) {}
         return;
       }
-      setNotice(hostStatusNotice, "Compagno in arrivo! Negoziazione router in corso...");
+      hostStatusNotice.innerText = "Compagno in arrivo! Negoziazione router in corso...";
       setupDataConnection(conn, 1);
     });
 
     peer.on("error", (err) => {
       console.error("[WebRTC Host] Errore broker:", err);
+      btnStartHosting.style.display = "block";
       if (err.type === "unavailable-id") {
         showInGameNotice("[AVVISO] Codice stanza gia in uso. Ritento...", 2000);
         setTimeout(() => { if (!netplayConnected) btnStartHosting.click(); }, 500);
       } else {
-        setNotice(hostStatusNotice, `[AVVISO P2P] ${err.type || 'Connessione al broker fallita'}.`, true);
+        hostStatusNotice.innerHTML = `<span style='color:#f87171'>Errore broker: ${err.type || err}</span>`;
       }
     });
   } catch (err) {
     console.warn("PeerJS init error:", err);
+    btnStartHosting.style.display = "block";
   }
-
-  // Prepara anche il fallback token manuale offline
-  try {
-    if (typeof P2P !== "undefined" && P2P.P2PLink && hostOfferCode) {
-      const manualLink = new P2P.P2PLink("host", P2P_ICE_SERVERS);
-      window._manualHostLink = manualLink;
-      hostOfferCode.value = "Generazione token offline...";
-      manualLink.createOffer().then((off) => {
-        hostOfferCode.value = off;
-        if (btnHostConnect) btnHostConnect.disabled = false;
-      }).catch(() => {});
-    }
-  } catch (e) {}
 });
 
 btnCopyRoomCode.addEventListener("click", () => {
@@ -2945,20 +2844,26 @@ if (btnCopyRoomLink) {
   });
 }
 
-const btnHostStartGame = document.getElementById("btnHostStartGame");
 if (btnHostStartGame) {
   btnHostStartGame.addEventListener("click", () => {
     if (!window.romBytes) {
       showInGameNotice("[ROM] Carica prima il file .gba con il tasto '[ROM] Carica .gba' prima di avviare!", 6000);
       return;
     }
-    if (!activeP2PConn || !activeP2PConn.open || !guestConnected) {
-      showInGameNotice("[AVVISO] Nessun compagno e ancora pronto. Attendi che il compagno entri nella stanza.", 4000);
+    if (!activeP2PConn || !activeP2PConn.open) {
+      showInGameNotice("[AVVISO] Nessun compagno e connesso al momento.", 4000);
       return;
     }
 
-    const mySram = getLocalSramForHandshake();
+    let mySram = window.localSram;
+    if (!mySram || mySram.length !== SRAM_SIZE) mySram = exportCurrentSram(0);
+    if (!mySram || mySram.length !== SRAM_SIZE) {
+      mySram = new Uint8Array(SRAM_SIZE);
+      mySram.fill(0xff);
+    }
+    window.localSram = mySram;
     persistSram(mySram);
+
     netplayRtcEpoch = Math.floor(Date.now() / 1000);
     netplayRoomSpeed = parseInt(document.getElementById("hostRoomSpeed").value, 10) || 1;
     setSpeed(netplayRoomSpeed);
@@ -2966,7 +2871,6 @@ if (btnHostStartGame) {
     const sendHostBundle = () => {
       if (netplayConnected || !activeP2PConn || !activeP2PConn.open) return;
       console.log("[WebRTC Host] Invio ready_and_bundle...");
-      lastBundleSentAt = Date.now();
       activeP2PConn.send({
         type: "ready_and_bundle",
         player: 2,
@@ -2978,34 +2882,12 @@ if (btnHostStartGame) {
 
     sendHostBundle();
     stopP2PHandshakeTimer();
-    p2pHandshakeTimer = setInterval(sendHostBundle, HOST_BUNDLE_RESEND_MS);
-    setNotice(hostStatusNotice, "Avvio partita in corso... Scambio salvataggi (.sav)...");
+    p2pHandshakeTimer = setInterval(sendHostBundle, 1000);
+    hostStatusNotice.innerText = "Avvio partita in corso... Scambio salvataggi (.sav)...";
   });
 }
 
-if (btnHostConnect) {
-  btnHostConnect.addEventListener("click", async () => {
-    const text = hostAnswerInput ? hostAnswerInput.value.trim() : "";
-    if (!text) {
-      showInGameNotice("[AVVISO] Incolla prima il codice RISPOSTA del compagno.", 4000);
-      return;
-    }
-    const manualLink = window._manualHostLink;
-    if (!manualLink) return;
-    try {
-      await manualLink.acceptAnswer(text);
-      btnHostConnect.disabled = true;
-      setNotice(hostStatusNotice, "Risposta accettata. Negoziazione diretta P2P in corso...");
-      setupDataConnection(manualLink, 1);
-      manualLink.armTimeout(P2P_CONNECT_TIMEOUT_MS);
-    } catch (err) {
-      console.error("[WebRTC Host] Errore risposta manuale:", err);
-      setNotice(hostStatusNotice, `[ERRORE] ${err.message || err}`, true);
-    }
-  });
-}
-
-btnJoinExistingRoom.addEventListener("click", async () => {
+btnJoinExistingRoom.addEventListener("click", () => {
   if (!window.romBytes) {
     showInGameNotice("[ROM] Carica prima il file .gba con il tasto '[ROM] Carica .gba' prima di entrare!", 6000);
     return;
@@ -3020,28 +2902,6 @@ btnJoinExistingRoom.addEventListener("click", async () => {
     return;
   }
 
-  // Se l'input e' un token manuale offline GBA1...
-  if (rawInput.includes("GBA10") || rawInput.includes("GBA11") || rawInput.includes("#o=")) {
-    btnJoinExistingRoom.style.display = "none";
-    joinStatusArea.style.display = "block";
-    setNotice(joinStatusNotice, "Generazione risposta manuale offline...");
-    closeP2PLink();
-    try {
-      const link = new P2P.P2PLink("guest", P2P_ICE_SERVERS);
-      peer = link;
-      setupDataConnection(link, 2);
-      const ans = await link.acceptOffer(rawInput);
-      if (joinAnswerCode) joinAnswerCode.value = ans;
-      link.armTimeout(P2P_CONNECT_TIMEOUT_MS + 20000);
-      setNotice(joinStatusNotice, "Risposta pronta! Copiala e inviala all'Host per collegarvi.");
-    } catch (err) {
-      console.error("[WebRTC Guest] Errore token manuale:", err);
-      setNotice(joinStatusNotice, `[ERRORE] ${err.message || err}`, true);
-      btnJoinExistingRoom.style.display = "block";
-    }
-    return;
-  }
-
   const normalizedNum = extractRoomCode(rawInput);
   if (!normalizedNum) {
     showInGameNotice("[AVVISO] Codice stanza non valido. Esempio: GBA-4821", 4000);
@@ -3052,19 +2912,26 @@ btnJoinExistingRoom.addEventListener("click", async () => {
 
   btnJoinExistingRoom.style.display = "none";
   joinStatusArea.style.display = "block";
-  setNotice(joinStatusNotice, `Ricerca stanza [${displayCode}] sul broker P2P...`);
+  joinStatusNotice.innerText = `Ricerca stanza [${displayCode}] sul broker P2P...`;
 
-  closeP2PLink();
+  if (activeP2PConn) {
+    try { activeP2PConn.close(); } catch (e) {}
+    activeP2PConn = null;
+  }
+  if (peer) {
+    try { peer.destroy(); } catch (e) {}
+    peer = null;
+  }
 
   clearGuestJoinTimeout();
   guestJoinTimeoutTimer = setTimeout(() => {
     if (!netplayConnected) {
-      console.warn("[WebRTC Guest] Timeout di 25s raggiunto.");
-      setNotice(joinStatusNotice, `[ERRORE] Timeout: l'Host [${displayCode}] non risponde.\nVerifica che l'Host abbia la stanza aperta e clicca di nuovo su Entra.`, true);
+      console.warn("[WebRTC Guest] Timeout di 20s raggiunto.");
+      joinStatusNotice.innerHTML = `<span style='color:#f87171'>Timeout: l'Host [${displayCode}] non risponde.<br>Assicurati che l'Host abbia premuto "Crea Stanza" e sia online.</span>`;
       btnJoinExistingRoom.style.display = "block";
       stopP2PHandshakeTimer();
     }
-  }, 25000);
+  }, 20000);
 
   try {
     peer = new Peer({
@@ -3074,7 +2941,7 @@ btnJoinExistingRoom.addEventListener("click", async () => {
 
     peer.on("open", (myGuestId) => {
       console.log("[WebRTC Guest] Connessione a Host:", targetPeerId);
-      setNotice(joinStatusNotice, `Host trovato! Negoziazione canale diretto P2P con [${displayCode}]...`);
+      joinStatusNotice.innerText = `Host trovato! Negoziazione canale diretto P2P con [${displayCode}]...`;
       const conn = peer.connect(targetPeerId, { reliable: true });
       setupDataConnection(conn, 2);
     });
@@ -3085,26 +2952,31 @@ btnJoinExistingRoom.addEventListener("click", async () => {
       stopP2PHandshakeTimer();
       btnJoinExistingRoom.style.display = "block";
       if (err.type === "peer-unavailable") {
-        setNotice(joinStatusNotice, `[ERRORE] Stanza [${displayCode}] non trovata!\nAssicurati che l'Host abbia premuto "Crea Stanza" e che il codice coincida.`, true);
+        joinStatusNotice.innerHTML = `<span style='color:#f87171'>Stanza [${displayCode}] non trovata!<br>Assicurati che l'Host abbia premuto "Crea Stanza" e che il codice sia corretto.</span>`;
       } else {
-        setNotice(joinStatusNotice, `[ERRORE P2P] ${err.type || 'Impossibile raggiungere l\'Host'}`, true);
+        joinStatusNotice.innerHTML = `<span style='color:#f87171'>Errore connessione: ${err.type || err}</span>`;
       }
     });
   } catch (err) {
     console.error("PeerJS guest error:", err);
     btnJoinExistingRoom.style.display = "block";
-    setNotice(joinStatusNotice, `[ERRORE P2P] Inizializzazione fallita: ${err.message || err}`, true);
+    joinStatusNotice.innerHTML = `<span style='color:#f87171'>Inizializzazione fallita: ${err.message || err}</span>`;
   }
 });
 
-if (btnCopyAnswerCode) {
-  btnCopyAnswerCode.addEventListener("click", () => {
-    if (joinAnswerCode) copyText(joinAnswerCode.value.trim(), btnCopyAnswerCode, "[Copia] Risposta Manuale");
-  });
-}
-
 btnDisconnectNetplay.addEventListener("click", () => {
-  closeP2PLink();
+  stopP2PHandshakeTimer();
+  clearGuestJoinTimeout();
+  if (typeof netStopPings === "function") netStopPings();
+  if (typeof netUpdateBadge === "function") netUpdateBadge();
+  if (activeP2PConn) {
+    try { activeP2PConn.close(); } catch (e) {}
+    activeP2PConn = null;
+  }
+  if (peer) {
+    try { peer.destroy(); } catch (e) {}
+    peer = null;
+  }
   netplayConnected = false;
   window.netplayConnected = false;
   consecutiveWaitTicks = 0;
@@ -3191,20 +3063,10 @@ function checkUrlHashForRoom() {
       return;
     }
   }
-
-  // Fallback link manuale offline: #o=GBA1...
-  const mManual = hash.match(/[#&]o=(GBA1[01][A-Za-z0-9_-]+)/);
-  if (mManual) {
-    if (joinRoomCode) joinRoomCode.value = mManual[1];
-    if (tabJoinBtn) tabJoinBtn.click();
-    netplayModal.style.display = "flex";
-    showInGameNotice("[P2P] Invito offline rilevato dal link! Carica la ROM, poi premi [Entra].", 9000);
-  }
 }
 
-// ROM caricata automaticamente all'avvio. Vuoto = nessun download (consigliato su GitHub Pages).
-// Esempio: "./roms/MiaRom.gba" (solo se la ROM e' davvero nel repository).
-const DEFAULT_ROM_URL = "";
+// ROM caricata automaticamente all'avvio (se presente nella cartella roms/).
+const DEFAULT_ROM_URL = "./roms/PokemonQuetzal.gba";
 
 // App Initialization
 async function initCore() {
