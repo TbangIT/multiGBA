@@ -272,8 +272,9 @@
         <div class="form-group">
           <label>Visualizzazione Schermo:</label>
           <select id="hostScreenView" class="mode-select" style="width: 100%;">
-            <option value="solo" selected>Solo il mio schermo (240x160)</option>
+            <option value="solo" selected>Solo il mio schermo (240x160 - Più fluido)</option>
             <option value="split">Split-Screen Orizzontale (2 Schermi - 480x160)</option>
+            <option value="grid">Griglia 4 Schermi (2x2 - 480x320)</option>
           </select>
         </div>
 
@@ -288,11 +289,41 @@
             <button id="btnCopyRoomLink" style="font-size: 12px; padding: 8px 14px; background: #065f46; border-color: #10b981; font-weight: bold;">[Copia] Link Diretto (Invia ai compagni)</button>
             <button id="btnCopyRoomCode" style="font-size: 12px; padding: 8px 14px;">[Copia] Solo Codice</button>
           </div>
-          <div class="status-notice" id="hostStatusNotice">In attesa che il compagno entri nella stanza...</div>
+          <div class="status-notice" id="hostStatusNotice">In attesa che i compagni entrino nella stanza...</div>
 
-          <!-- Pulsante Avvia Partita (Host controlla l'avvio della partita) -->
+          <!-- Lobby Giocatori (2 - 4 Giocatori) -->
+          <div class="lobby-players-box" style="margin: 14px 0; text-align: left;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 11px; font-weight: bold; color: #a1a1aa; text-transform: uppercase;">Lobby Giocatori (2-4 Giocatori):</span>
+              <span id="hostLobbyCountBadge" class="badge" style="font-size: 11px; padding: 2px 8px;">1 / 4 Giocatori</span>
+            </div>
+            <div id="hostLobbyPlayerList" style="display: flex; flex-direction: column; gap: 6px;">
+              <div class="lobby-player-row connected" id="hostSlot1">
+                <span class="lobby-player-tag lobby-tag-p1">P1</span>
+                <span style="font-weight: 600; flex: 1; margin-left: 8px;" id="hostSlot1Name">Host (Tu)</span>
+                <span class="lobby-status-badge lobby-status-ready">Host</span>
+              </div>
+              <div class="lobby-player-row empty" id="hostSlot2">
+                <span class="lobby-player-tag lobby-tag-p2">P2</span>
+                <span style="flex: 1; margin-left: 8px; color: #71717a;" id="hostSlot2Name">In attesa compagno...</span>
+                <span class="lobby-status-badge lobby-status-waiting" id="hostSlot2Status">In attesa</span>
+              </div>
+              <div class="lobby-player-row empty" id="hostSlot3">
+                <span class="lobby-player-tag lobby-tag-p3">P3</span>
+                <span style="flex: 1; margin-left: 8px; color: #71717a;" id="hostSlot3Name">Disponibile (opzionale)</span>
+                <span class="lobby-status-badge lobby-status-waiting" id="hostSlot3Status">Disponibile</span>
+              </div>
+              <div class="lobby-player-row empty" id="hostSlot4">
+                <span class="lobby-player-tag lobby-tag-p4">P4</span>
+                <span style="flex: 1; margin-left: 8px; color: #71717a;" id="hostSlot4Name">Disponibile (opzionale)</span>
+                <span class="lobby-status-badge lobby-status-waiting" id="hostSlot4Status">Disponibile</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pulsante Avvia Partita (Abilitato con >= 2 giocatori) -->
           <button class="primary" id="btnHostStartGame" disabled style="width: 100%; justify-content: center; padding: 12px; font-size: 14px; font-weight: bold; margin-top: 12px; background: #374151; border-color: #4b5563; cursor: not-allowed;">
-            [▶] In attesa del compagno...
+            [▶] In attesa dei compagni (minimo 2)...
           </button>
         </div>
       </div>
@@ -313,8 +344,9 @@
         <div class="form-group">
           <label>Visualizzazione Schermo:</label>
           <select id="joinScreenView" class="mode-select" style="width: 100%;">
-            <option value="solo" selected>Solo il mio schermo (240x160)</option>
+            <option value="solo" selected>Solo il mio schermo (240x160 - Più fluido)</option>
             <option value="split">Split-Screen Orizzontale (2 Schermi - 480x160)</option>
+            <option value="grid">Griglia 4 Schermi (2x2 - 480x320)</option>
           </select>
         </div>
 
@@ -324,6 +356,15 @@
 
         <div id="joinStatusArea" style="display: none; margin-top: 16px; padding: 14px; background: #18181b; border: 1px solid #6366f1; border-radius: 8px; text-align: center;">
           <div class="status-notice" id="joinStatusNotice">Connessione all'Host in corso...</div>
+
+          <!-- Lobby Giocatori (lato Guest) -->
+          <div class="lobby-players-box" style="margin: 14px 0; text-align: left;" id="joinLobbyBox">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 11px; font-weight: bold; color: #a1a1aa; text-transform: uppercase;">Giocatori nella Stanza:</span>
+              <span id="joinLobbyCountBadge" class="badge" style="font-size: 11px; padding: 2px 8px;">In connessione...</span>
+            </div>
+            <div id="joinLobbyPlayerList" style="display: flex; flex-direction: column; gap: 6px;"></div>
+          </div>
         </div>
       </div>
 
