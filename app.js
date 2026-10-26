@@ -2004,9 +2004,18 @@ function unpackGbrb(data) {
 // GitHub". Se vuoi un relay devi aggiungere qui un TURN tuo, ad esempio:
 //   { urls: "turn:turn.example.com:3478", username: "utente", credential: "password" }
 const P2P_ICE_SERVERS = [
-  { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+  { urls: [
+    "stun:stun.l.google.com:19302",
+    "stun:stun1.l.google.com:19302",
+    "stun:stun2.l.google.com:19302",
+    "stun:stun3.l.google.com:19302",
+    "stun:stun4.l.google.com:19302"
+  ]},
   { urls: "stun:stun.cloudflare.com:3478" },
   { urls: "stun:global.stun.twilio.com:3478" },
+  { urls: "stun:stun.services.mozilla.com" },
+  { urls: "stun:stun.sipgate.net" },
+  { urls: "stun:stun.nextcloud.com:443" }
 ];
 const P2P_CONNECT_TIMEOUT_MS = 40000;
 const HOST_BUNDLE_RESEND_MS = 4000;
@@ -2082,17 +2091,27 @@ function updateHostLobbyUi() {
   const total = 1 + connectedGuests.length;
   if (countBadge) countBadge.textContent = `${total} / 4 Giocatori`;
 
+  let readyGuestsCount = 0;
   for (let slot = 2; slot <= 4; slot++) {
     const slotEl = document.getElementById(`hostLobbySlot${slot}`);
     const nameEl = document.getElementById(`hostLobbyP${slot}Name`);
     const statusEl = document.getElementById(`hostLobbyP${slot}Status`);
     const g = connectedGuests.find(x => x.slot === slot);
     if (g && slotEl && nameEl && statusEl) {
-      slotEl.className = "lobby-player-row connected";
-      nameEl.textContent = g.name || `Giocatore ${slot}`;
-      nameEl.style.color = "#f4f4f5";
-      statusEl.className = "lobby-status-badge lobby-status-ready";
-      statusEl.textContent = "Connesso";
+      if (g.ready && g.conn && g.conn.open) {
+        readyGuestsCount++;
+        slotEl.className = "lobby-player-row connected";
+        nameEl.textContent = g.name || `Giocatore ${slot}`;
+        nameEl.style.color = "#f4f4f5";
+        statusEl.className = "lobby-status-badge lobby-status-ready";
+        statusEl.textContent = "Pronto";
+      } else {
+        slotEl.className = "lobby-player-row connected";
+        nameEl.textContent = g.name || `Giocatore ${slot}`;
+        nameEl.style.color = "#fde68a";
+        statusEl.className = "lobby-status-badge lobby-status-connecting";
+        statusEl.textContent = "In connessione...";
+      }
     } else if (slotEl && nameEl && statusEl) {
       slotEl.className = "lobby-player-row empty";
       nameEl.textContent = "In attesa...";
@@ -2110,24 +2129,38 @@ function updateHostLobbyUi() {
       btnStart.style.borderColor = "#4b5563";
       btnStart.style.cursor = "not-allowed";
       btnStart.textContent = "[▶] In attesa di altri giocatori (min. 2)...";
+    } else if (readyGuestsCount === 0) {
+      btnStart.disabled = true;
+      btnStart.style.background = "#854d0e";
+      btnStart.style.borderColor = "#ca8a04";
+      btnStart.style.cursor = "wait";
+      btnStart.textContent = "[...] Connessione compagni in corso...";
     } else {
+      const activeTotal = 1 + readyGuestsCount;
       btnStart.disabled = false;
       btnStart.style.background = "#15803d";
       btnStart.style.borderColor = "#22c55e";
       btnStart.style.cursor = "pointer";
-      btnStart.textContent = total === 4 ? `[▶] Avvia Partita (4 Giocatori - Stanza Piena)` : `[▶] Avvia Partita (${total} Giocatori)`;
+      btnStart.textContent = activeTotal === 4
+        ? `[▶] Avvia Partita (4 Giocatori - Stanza Piena)`
+        : `[▶] Avvia Partita (${activeTotal} Giocatori)`;
     }
   }
 }
 
 function broadcastLobbyRoster() {
   const hostInput = document.getElementById("hostPlayerName");
-  const hostName = (hostInput && hostInput.value.trim()) || "Player 1";
+  const hostName = (hostInput && hostInput.value.trim()) || "Host";
   const roster = [
-    { slot: 1, name: hostName, isHost: true }
+    { slot: 1, name: hostName, isHost: true, ready: true }
   ];
   for (const g of connectedGuests) {
-    roster.push({ slot: g.slot, name: g.name || `Giocatore ${g.slot}`, isHost: false });
+    roster.push({
+      slot: g.slot,
+      name: g.name || `Giocatore ${g.slot}`,
+      isHost: false,
+      ready: !!g.ready
+    });
   }
   const payload = {
     type: "lobby_roster",
@@ -2152,10 +2185,13 @@ function updateGuestLobbyUi(data) {
     row.className = "lobby-player-row connected";
     const tagClass = `lobby-tag-p${p.slot}`;
     const isMe = p.slot === myPlayerId;
+    const isReady = p.ready || p.isHost;
     row.innerHTML = `
       <span class="lobby-player-tag ${tagClass}">P${p.slot}</span>
       <span style="font-weight: 600; flex: 1; margin-left: 8px;">${p.name} ${isMe ? '(Tu)' : ''}</span>
-      <span class="lobby-status-badge lobby-status-ready">${p.isHost ? 'Host' : 'Pronto'}</span>
+      <span class="lobby-status-badge ${isReady ? 'lobby-status-ready' : 'lobby-status-connecting'}">
+        ${p.isHost ? 'Host' : (isReady ? 'Pronto' : 'Connessione...')}
+      </span>
     `;
     listEl.appendChild(row);
   }
@@ -2172,16 +2208,39 @@ function updateGuestLobbyUi(data) {
 }
 
 function setupDataConnection(conn, role, guestSlot) {
-  activeP2PConn = conn;
+  if (role === 2) {
+    activeP2PConn = conn;
+  }
   myPlayerId = role;
   remotePlayerId = myPlayerId === 1 ? 2 : 1;
   const notice = role === 1 ? hostStatusNotice : joinStatusNotice;
 
+  const hookPc = (pc) => {
+    if (!pc) return;
+    pc.oniceconnectionstatechange = () => {
+      const s = pc.iceConnectionState;
+      console.log(`[WebRTC ICE] State (${role === 1 ? 'Host' : 'Guest'}):`, s);
+      if (netplayConnected) return;
+      if (s === "checking") {
+        setNotice(notice, "Negoziazione router in corso (STUN)...");
+      } else if (s === "connected" || s === "completed") {
+        setNotice(notice, role === 1
+          ? "Compagno collegato! Apertura canale dati..."
+          : "Router collegati con successo! Apertura lobby...");
+      } else if (s === "failed" || s === "disconnected") {
+        setNotice(notice, "[AVVISO] Collegamento diretto non riuscito tra i router.\nVerificate l'Hotspot o riprovate.", true);
+      }
+    };
+  };
+
+  if (conn.peerConnection) hookPc(conn.peerConnection);
+  else if (conn.pc) hookPc(conn.pc);
+
   conn.on("iceStateChanged", (s) => {
-    console.log(`[WebRTC ICE] State (${role === 1 ? 'Host' : 'Guest'}):`, s);
+    console.log(`[WebRTC ICE Custom] State (${role === 1 ? 'Host' : 'Guest'}):`, s);
     if (netplayConnected) return;
     if (s === "checking") {
-      setNotice(notice, "Negoziazione dei router in corso (STUN)...");
+      setNotice(notice, "Negoziazione router in corso (STUN)...");
     } else if (s === "connected" || s === "completed") {
       setNotice(notice, "Router collegati! Apertura canale di gioco...");
     }
@@ -2191,31 +2250,40 @@ function setupDataConnection(conn, role, guestSlot) {
     console.log(`[WebRTC P2P] DataChannel aperto con successo! Ruolo: Giocatore ${myPlayerId}`);
     clearGuestJoinTimeout();
     if (role === 1) {
-      // Host: accoglie il guest nel suo slot e manda l'evento lobby
       const assignedSlot = guestSlot || conn._assignedSlot || (connectedGuests.length + 1);
       conn._assignedSlot = assignedSlot;
       const hostInput = document.getElementById("hostPlayerName");
       const hostName = (hostInput && hostInput.value.trim()) || "Host";
 
-      conn.send({
-        type: "lobby_welcome",
-        slot: assignedSlot,
-        roomCode: currentRoomCode,
-        roomSpeed: netplayRoomSpeed,
-        hostName: hostName
-      });
+      const g = connectedGuests.find(x => x.conn === conn || x.slot === assignedSlot);
+      if (g) {
+        g.slot = assignedSlot;
+        g.conn = conn;
+      }
+
+      try {
+        conn.send({
+          type: "lobby_welcome",
+          slot: assignedSlot,
+          roomCode: currentRoomCode,
+          roomSpeed: netplayRoomSpeed,
+          hostName: hostName
+        });
+      } catch(e) {}
       updateHostLobbyUi();
       broadcastLobbyRoster();
-      setNotice(hostStatusNotice, `Giocatore collegato nello Slot P${assignedSlot}!\nL'Host puo avviare la partita o attendere altri amici.`);
+      setNotice(hostStatusNotice, `Giocatore collegato nello Slot P${assignedSlot}!\nIn attesa di conferma...`);
     } else {
-      setNotice(joinStatusNotice, "Canale P2P aperto! In attesa di assegnazione slot...");
+      setNotice(joinStatusNotice, "Canale P2P aperto! Registrazione nella stanza...");
       const sendGuestHello = () => {
-        if (netplayConnected || !activeP2PConn || !activeP2PConn.open) return;
-        activeP2PConn.send({ type: "guest_hello" });
+        if (netplayConnected || !conn || !conn.open) return;
+        try {
+          conn.send({ type: "guest_hello" });
+        } catch(e) {}
       };
       sendGuestHello();
       stopP2PHandshakeTimer();
-      p2pHandshakeTimer = setInterval(sendGuestHello, GUEST_HELLO_RESEND_MS);
+      p2pHandshakeTimer = setInterval(sendGuestHello, 1500);
     }
   });
 
@@ -2316,34 +2384,79 @@ function handleP2PControlMessage(msg, fromConn) {
     netplayRoomSpeed = msg.roomSpeed || 1;
     setSpeed(netplayRoomSpeed);
 
-    setNotice(joinStatusNotice, `Collegato alla Stanza [${currentRoomCode}]!\nSei registrato come Giocatore ${myPlayerId}.`);
+    setNotice(joinStatusNotice, `Sei nella Stanza [${currentRoomCode}] come Giocatore ${myPlayerId}!\nIn attesa che l'Host avvii la partita...`);
 
     const mySram = getLocalSramForHandshake();
     persistSram(mySram);
     const joinInput = document.getElementById("joinPlayerName");
     const myName = (joinInput && joinInput.value.trim()) || `Giocatore ${myPlayerId}`;
 
-    if (activeP2PConn && activeP2PConn.open) {
-      activeP2PConn.send({
-        type: "guest_info",
-        slot: myPlayerId,
-        name: myName,
-        sramBase64: uint8ToBase64(mySram)
-      });
+    const targetConn = fromConn || activeP2PConn;
+    if (targetConn && targetConn.open) {
+      try {
+        targetConn.send({
+          type: "guest_info",
+          slot: myPlayerId,
+          name: myName,
+          sramBase64: uint8ToBase64(mySram)
+        });
+      } catch(e) {}
     }
+
+    // Invia guest_info periodicamente finche non arriva conferma dall'Host
+    stopP2PHandshakeTimer();
+    p2pHandshakeTimer = setInterval(() => {
+      if (netplayConnected || !targetConn || !targetConn.open) return;
+      try {
+        targetConn.send({
+          type: "guest_info",
+          slot: myPlayerId,
+          name: myName,
+          sramBase64: uint8ToBase64(mySram)
+        });
+      } catch(e) {}
+    }, 2000);
   } else if (msg.type === "guest_info" && myPlayerId === 1) {
-    // Ricevuto dall'Host: memorizza nome e SRAM del guest
+    // Ricevuto dall'Host: memorizza nome e SRAM del guest e segna come pronto
     const targetSlot = msg.slot || (fromConn && fromConn._assignedSlot);
     const g = connectedGuests.find(x => x.conn === fromConn || x.slot === targetSlot);
     if (g) {
       if (msg.name) g.name = msg.name;
       if (msg.sramBase64) g.sram = base64ToUint8(msg.sramBase64);
+      g.ready = true;
+      if (fromConn) g.conn = fromConn;
     }
+    try {
+      fromConn.send({ type: "guest_info_ack", slot: targetSlot });
+    } catch(e) {}
     updateHostLobbyUi();
     broadcastLobbyRoster();
+  } else if (msg.type === "guest_info_ack" && myPlayerId >= 2) {
+    // Guest riceve conferma dall'Host: ferma il timer di reinvio di guest_info
+    stopP2PHandshakeTimer();
+    setNotice(joinStatusNotice, `Pronto nella Stanza [${currentRoomCode}]!\nIn attesa che l'Host avvii la partita...`);
   } else if (msg.type === "lobby_roster" && myPlayerId >= 2) {
     // Aggiornamento roster dei giocatori nella stanza (lato Guest)
+    stopP2PHandshakeTimer();
     updateGuestLobbyUi(msg);
+    setNotice(joinStatusNotice, `Sei nella Stanza [${currentRoomCode}] come Giocatore ${myPlayerId}!\nIn attesa che l'Host avvii la partita...`);
+  } else if (msg.type === "guest_hello" && myPlayerId === 1 && !netplayConnected) {
+    // Guest richiede lobby_welcome
+    const g = connectedGuests.find(x => x.conn === fromConn);
+    const targetSlot = (g && g.slot) || (fromConn && fromConn._assignedSlot) || 2;
+    const hostInput = document.getElementById("hostPlayerName");
+    const hostName = (hostInput && hostInput.value.trim()) || "Host";
+    if (fromConn && fromConn.open) {
+      try {
+        fromConn.send({
+          type: "lobby_welcome",
+          slot: targetSlot,
+          roomCode: currentRoomCode,
+          roomSpeed: netplayRoomSpeed,
+          hostName: hostName
+        });
+      } catch(e) {}
+    }
   } else if (msg.type === "start_multi_game") {
     // Avvio effettivo della partita sincronizzata lanciato dall'Host
     if (netplayConnected) return;
@@ -2369,78 +2482,6 @@ function handleP2PControlMessage(msg, fromConn) {
   } else if (msg.type === "room_full") {
     setNotice(joinStatusNotice, `[ERRORE] ${msg.message || 'La stanza è al completo (max 4 giocatori)'}`, true);
     if (activeP2PConn) { try { activeP2PConn.close(); } catch(e) {} }
-  } else if (msg.type === "guest_hello" && myPlayerId === 1 && !netplayConnected) {
-    // Retrocompatibilita
-    if (Date.now() - lastBundleSentAt < 3000) return;
-    const mySram = getLocalSramForHandshake();
-    if (activeP2PConn && activeP2PConn.open) {
-      lastBundleSentAt = Date.now();
-      activeP2PConn.send({
-        type: "ready_and_bundle",
-        player: 2,
-        room_speed: netplayRoomSpeed,
-        rtc_epoch: netplayRtcEpoch,
-        sramBase64: uint8ToBase64(mySram),
-      });
-    }
-  } else if (msg.type === "ready_and_bundle" && myPlayerId === 2) {
-    // Retrocompatibilita 2P
-    if (netplayConnected) return;
-    stopP2PHandshakeTimer();
-    clearGuestJoinTimeout();
-
-    netplayRoomSpeed = msg.room_speed || 1;
-    netplayRtcEpoch = msg.rtc_epoch || Math.floor(Date.now() / 1000);
-    setSpeed(netplayRoomSpeed);
-
-    setNotice(joinStatusNotice, "Host pronto! Invio il mio salvataggio (.sav)...");
-
-    const mySram = getLocalSramForHandshake();
-    persistSram(mySram);
-
-    const sendGuestBundle = () => {
-      if (!activeP2PConn || !activeP2PConn.open) return;
-      activeP2PConn.send({
-        type: "guest_bundle",
-        sramBase64: uint8ToBase64(mySram),
-      });
-    };
-    sendGuestBundle();
-    p2pHandshakeTimer = setInterval(sendGuestBundle, HOST_BUNDLE_RESEND_MS);
-
-    const hostSram = base64ToUint8(msg.sramBase64);
-    const guestSram = mySram;
-
-    const chosenView = document.getElementById("joinScreenView").value;
-    startNetplayMultiCore(hostSram, guestSram, 2, chosenView);
-
-    netplayConnected = true;
-    window.netplayConnected = true;
-    netStartPings();
-    netUpdateBadge();
-    netplayModal.style.display = "none";
-    activeNetplayBanner.style.display = "block";
-    activeNetplayDetail.innerText = `Collegato come Giocatore 2 (${netplayRoomSpeed}x Speed - P2P Diretto).`;
-  } else if (msg.type === "guest_bundle" && myPlayerId === 1) {
-    // Retrocompatibilita 2P
-    try { activeP2PConn.send({ type: "bundle_ack" }); } catch (e) {}
-    if (netplayConnected) return;
-    stopP2PHandshakeTimer();
-    const guestSram = base64ToUint8(msg.sramBase64);
-    const hostSram = getLocalSramForHandshake();
-
-    const chosenView = document.getElementById("hostScreenView").value;
-    startNetplayMultiCore(hostSram, guestSram, 1, chosenView);
-
-    netplayConnected = true;
-    window.netplayConnected = true;
-    netStartPings();
-    netUpdateBadge();
-    netplayModal.style.display = "none";
-    activeNetplayBanner.style.display = "block";
-    activeNetplayDetail.innerText = `Collegato come Giocatore 1 (${netplayRoomSpeed}x Speed - P2P Diretto).`;
-  } else if (msg.type === "bundle_ack") {
-    stopP2PHandshakeTimer();
   } else if (msg.type === "change_speed") {
     setSpeed(msg.speed || 1);
   }
@@ -3283,11 +3324,12 @@ btnStartHosting.addEventListener("click", async () => {
         slot: nextSlot,
         conn: conn,
         name: `Giocatore ${nextSlot}`,
-        sram: null
+        sram: null,
+        ready: false
       };
       connectedGuests.push(guestObj);
 
-      setNotice(hostStatusNotice, `Nuovo giocatore collegato (Slot P${nextSlot})! Negoziazione...`);
+      setNotice(hostStatusNotice, `Nuovo giocatore rilevato (Slot P${nextSlot})! Negoziazione router in corso...`);
       setupDataConnection(conn, 1, nextSlot);
       updateHostLobbyUi();
     });
@@ -3339,18 +3381,19 @@ if (btnHostStartGame) {
       showInGameNotice("[ROM] Carica prima il file .gba con il tasto '[ROM] Carica .gba' prima di avviare!", 6000);
       return;
     }
-    if (connectedGuests.length === 0) {
-      showInGameNotice("[AVVISO] Attendi che si colleghi almeno un altro giocatore (min. 2 giocatori).", 4000);
+    const readyGuests = connectedGuests.filter(g => g.ready && g.conn && g.conn.open);
+    if (readyGuests.length === 0) {
+      showInGameNotice("[AVVISO] Nessun compagno e ancora pronto. Attendi che il badge sia verde 'Pronto'.", 4000);
       return;
     }
-    const totalPlayers = 1 + connectedGuests.length;
+    const totalPlayers = 1 + readyGuests.length;
     const hostSram = getLocalSramForHandshake();
     persistSram(hostSram);
 
     const sramsMap = {
       1: uint8ToBase64(hostSram)
     };
-    for (const g of connectedGuests) {
+    for (const g of readyGuests) {
       let gSram = g.sram;
       if (!gSram || gSram.length !== SRAM_SIZE) {
         gSram = new Uint8Array(SRAM_SIZE);
@@ -3363,20 +3406,18 @@ if (btnHostStartGame) {
     netplayRoomSpeed = parseInt(document.getElementById("hostRoomSpeed").value, 10) || 1;
     setSpeed(netplayRoomSpeed);
 
-    for (const g of connectedGuests) {
-      if (g.conn && g.conn.open) {
-        try {
-          g.conn.send({
-            type: "start_multi_game",
-            totalPlayers: totalPlayers,
-            assignedSlot: g.slot,
-            rtcEpoch: netplayRtcEpoch,
-            roomSpeed: netplayRoomSpeed,
-            srams: sramsMap
-          });
-        } catch (e) {
-          console.warn("Error sending start_multi_game to guest:", e);
-        }
+    for (const g of readyGuests) {
+      try {
+        g.conn.send({
+          type: "start_multi_game",
+          totalPlayers: totalPlayers,
+          assignedSlot: g.slot,
+          rtcEpoch: netplayRtcEpoch,
+          roomSpeed: netplayRoomSpeed,
+          srams: sramsMap
+        });
+      } catch (e) {
+        console.warn("Error sending start_multi_game to guest:", e);
       }
     }
 
