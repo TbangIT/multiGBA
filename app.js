@@ -1283,6 +1283,9 @@ let netInputDelay = NET_DELAY_INITIAL;
 let netLastScheduled = NET_DELAY_INITIAL - 1;
 let netRttMs = 0, netRttDev = 0, netRttSamples = 0, netRttMin = 0;
 let netPingTimer = null;
+let netPeerRtt = new Map();           // solo host: RTT/jitter di OGNI guest (prima: un'unica media mescolata)
+let netHostDelay = 0;                 // solo guest: delay minimo raccomandato dall'host (copre guest->host->guest)
+let netEmuMs = 0;                     // costo medio (ms) di un passo di emulazione: distingue CPU da rete
 let netLastDelayChange = 0;
 let netStalling = false, netStallStart = 0, netOverlayLevel = 0;
 let netStallTimes = [];               // istanti degli ultimi stalli (per alzare il delay se si ripetono)
@@ -1292,6 +1295,7 @@ function netResetAdaptiveState() {
   netInputDelay = NET_DELAY_INITIAL;
   netLastScheduled = NET_DELAY_INITIAL - 1;
   netRttMs = 0; netRttDev = 0; netRttSamples = 0; netRttMin = 0;
+  netPeerRtt.clear(); netHostDelay = 0; netEmuMs = 0;
   netLastDelayChange = performance.now();
   netStalling = false; netStallStart = 0; netOverlayLevel = 0;
   netStallTimes = [];
@@ -1310,9 +1314,18 @@ function netSetDelay(d, why) {
 
 // Delay desiderato: meta' RTT + margine di jitter + 1 frame (il ricevente legge una volta per frame).
 function netWantedDelay() {
-  if (!netRttSamples) return NET_DELAY_INITIAL;
-  const budget = netRttMs / 2 + 1.5 * netRttDev + 12;
-  return Math.max(NET_DELAY_MIN, Math.min(NET_DELAY_MAX, Math.ceil(budget / GBA_FRAME_MS)));
+  if (!netRttSamples) return Math.max(NET_DELAY_INITIAL, netHostDelay);
+  let budget;
+  if (myPlayerId === 1) {
+    // Con 3-4 giocatori il percorso peggiore e' guest->host->guest: somma delle due tratte piu' lente.
+    const k = netPeerRtt.size > 1 ? 2 : 1.5;
+    const legs = [...netPeerRtt.values()].map((x) => x.rtt / 2 + k * x.dev).sort((a, b) => b - a);
+    budget = (legs[0] || 0) + (legs[1] || 0) + 12;
+  } else {
+    budget = netRttMs / 2 + 2 * netRttDev + 12;
+  }
+  const f = Math.ceil(budget / GBA_FRAME_MS);
+  return Math.max(NET_DELAY_MIN, Math.min(NET_DELAY_MAX, myPlayerId === 1 ? f : Math.max(f, netHostDelay)));
 }
 
 function netAdaptDelay(now) {
@@ -1344,6 +1357,27 @@ function netUpdateBadge() {
   el.textContent = `Ping ${ping} | Delay ${netInputDelay}f`;
 }
 
+// Canale dati "veloce" (input + ping): non ordinato, zero ritrasmissioni. Il canale PeerJS e' ordinato+affidabile:
+// un solo pacchetto perso blocca TUTTI i successivi per >=200 ms (head-of-line blocking) => stallo => overlay.
+// Ogni pacchetto porta gia' gli ultimi 32 input, quindi una perdita si recupera col pacchetto dopo.
+// Compatibile con client vecchi: se il canale non si apre si ricade su conn.send().
+function netOpenFastChannel(conn, onData) {
+  try {
+    const pc = conn.peerConnection;
+    if (!pc || typeof pc.createDataChannel !== "function") return;
+    const dc = pc.createDataChannel("fast", { negotiated: true, id: 7, ordered: false, maxRetransmits: 0 });
+    dc.binaryType = "arraybuffer";
+    dc.onmessage = (e) => onData(e.data);
+    conn._fast = dc;
+  } catch (e) { console.warn("[Net] canale veloce non disponibile:", e); }
+}
+function netSend(conn, buf) {
+  if (!conn) return;
+  const dc = conn._fast;
+  if (dc && dc.readyState === "open") { try { dc.send(buf); return; } catch (e) {} }
+  if (conn.open) { try { conn.send(buf); } catch (e) {} }
+}
+
 function netPacketIsPing(buf) {
   return buf && buf.byteLength === 16 && new DataView(buf).getUint32(0) === NET_PING_MAGIC;
 }
@@ -1355,15 +1389,10 @@ function netSendPing(type, ts) {
   v.setUint8(4, type);
   v.setFloat64(8, ts);
   if (myPlayerId === 1) {
-    for (const guest of Object.values(connectedGuests)) {
-      if (guest && guest.conn && guest.conn.open) {
-        try { guest.conn.send(b); } catch (e) {}
-      }
-    }
+    v.setUint8(5, netInputDelay);   // i guest non misurano guest<->guest: usano il delay deciso dall'host
+    for (const guest of Object.values(connectedGuests)) if (guest) netSend(guest.conn, b);
   } else {
-    if (activeP2PConn && activeP2PConn.open) {
-      try { activeP2PConn.send(b); } catch (e) {}
-    }
+    netSend(activeP2PConn, b);
   }
 }
 
@@ -1377,10 +1406,8 @@ function netHandlePing(buf, replyConn) {
     rv.setUint32(0, NET_PING_MAGIC);
     rv.setUint8(4, 1);
     rv.setFloat64(8, ts);
-    const target = replyConn || activeP2PConn;
-    if (target && target.open) {
-      try { target.send(b); } catch(e) {}
-    }
+    if (myPlayerId !== 1 && v.getUint8(5) > 0) { netHostDelay = v.getUint8(5); netAdaptDelay(performance.now()); }
+    netSend(replyConn || activeP2PConn, b);
   } else {
     const rtt = performance.now() - ts;
     if (!(rtt >= 0 && rtt < 5000)) return;
@@ -1390,6 +1417,10 @@ function netHandlePing(buf, replyConn) {
       netRttMs = netRttMs * 0.875 + rtt * 0.125;
       netRttMin = Math.min(netRttMin, rtt);
     }
+    const key = replyConn || "host";
+    const ps = netPeerRtt.get(key);
+    if (!ps) netPeerRtt.set(key, { rtt, dev: rtt / 4 });
+    else { ps.dev = ps.dev * 0.75 + Math.abs(rtt - ps.rtt) * 0.25; ps.rtt = ps.rtt * 0.875 + rtt * 0.125; }
     netRttSamples++;
     netAdaptDelay(performance.now());
     netUpdateBadge();
@@ -1411,7 +1442,10 @@ window.gbaNetDebug = () => ({
   delayFrames: netInputDelay,
   delayMs: Math.round(netInputDelay * GBA_FRAME_MS),
   rttMs: Math.round(netRttMs), rttMinMs: Math.round(netRttMin), jitterMs: Math.round(netRttDev),
-  samples: netRttSamples,
+  samples: netRttSamples, hostDelay: netHostDelay,
+  peers: [...netPeerRtt.values()].map((x) => ({ rtt: Math.round(x.rtt), jitter: Math.round(x.dev) })),
+  // se emuMs si avvicina a 16.7 il collo di bottiglia e' la CPU, non la rete
+  emuMs: +netEmuMs.toFixed(1), cpuPct: Math.round(netEmuMs / GBA_FRAME_MS * 100),
   stalls: netStallCount, stallMsTotal: Math.round(netStallMsTotal), stallMsMax: Math.round(netStallMsMax),
   frame: totalFramesSimulated, maxRemoteFrame,
 });
@@ -1536,15 +1570,9 @@ function runSingleSimulationFrame() {
     const gbrb = packGbrbInput(myPlayerId, netLastScheduled, localInputHistory);
     const rbal = packRbalFrame(0, gbrb);
     if (myPlayerId === 1) {
-      for (const guest of Object.values(connectedGuests)) {
-        if (guest && guest.conn && guest.conn.open) {
-          try { guest.conn.send(rbal); } catch(e) {}
-        }
-      }
+      for (const guest of Object.values(connectedGuests)) if (guest) netSend(guest.conn, rbal);
     } else {
-      if (activeP2PConn && activeP2PConn.open) {
-        try { activeP2PConn.send(rbal); } catch(e) {}
-      }
+      netSend(activeP2PConn, rbal);
     }
 
     // Strict Lockstep Check: Do we have all active remote players' inputs for totalFramesSimulated?
@@ -1631,7 +1659,9 @@ function runSingleSimulationFrame() {
   }
 
   // 2. Step GBA Emulation: avanzamento deterministico 1:1 con sincronizzazione SIO hardware
+  const emuT0 = performance.now();
   stepCoreOneFrame();
+  netEmuMs = netEmuMs ? netEmuMs * 0.95 + (performance.now() - emuT0) * 0.05 : performance.now() - emuT0;
   totalFramesSimulated++;
   frameCount++;
 
@@ -2104,6 +2134,7 @@ function setupHostGuestConnection(conn, slot) {
 
   conn.on("open", () => {
     console.log(`[WebRTC Host] DataChannel aperto per Giocatore ${slot}`);
+    netOpenFastChannel(conn, onData);
     // Invia welcome message con slot assegnato e roster
     try {
       conn.send({
@@ -2119,7 +2150,7 @@ function setupHostGuestConnection(conn, slot) {
     }, slot);
   });
 
-  conn.on("data", (data) => {
+  const onData = (data) => {
     if (data instanceof ArrayBuffer) {
       if (typeof netPacketIsPing === "function" && netPacketIsPing(data)) {
         netHandlePing(data, conn);
@@ -2142,9 +2173,7 @@ function setupHostGuestConnection(conn, slot) {
           // Relay packet to all other guests (Star Topology)
           for (const [idStr, g] of Object.entries(connectedGuests)) {
             const gid = parseInt(idStr, 10);
-            if (gid !== pid && g.conn && g.conn.open) {
-              try { g.conn.send(data); } catch(e) {}
-            }
+            if (gid !== pid) netSend(g.conn, data);
           }
         }
       } catch (err) {
@@ -2154,7 +2183,8 @@ function setupHostGuestConnection(conn, slot) {
       const msg = typeof data === "string" ? JSON.parse(data) : data;
       handleHostControlMessage(msg, slot, conn);
     }
-  });
+  };
+  conn.on("data", onData);
 
   conn.on("close", () => {
     console.log(`[WebRTC Host] Connessione chiusa per Giocatore ${slot}`);
@@ -2282,6 +2312,7 @@ function setupGuestConnection(conn) {
 
   conn.on("open", () => {
     console.log("[WebRTC Guest] Connesso all'Host! Invio guest_hello...");
+    netOpenFastChannel(conn, onData);
     clearGuestJoinTimeout();
     const myName = (document.getElementById("joinPlayerName")?.value || "").trim() || "Player";
     try {
@@ -2292,7 +2323,7 @@ function setupGuestConnection(conn) {
     } catch(e) {}
   });
 
-  conn.on("data", (data) => {
+  const onData = (data) => {
     if (data instanceof ArrayBuffer) {
       if (typeof netPacketIsPing === "function" && netPacketIsPing(data)) {
         netHandlePing(data, conn);
@@ -2320,7 +2351,8 @@ function setupGuestConnection(conn) {
       const msg = typeof data === "string" ? JSON.parse(data) : data;
       handleGuestControlMessage(msg, conn);
     }
-  });
+  };
+  conn.on("data", onData);
 
   conn.on("close", () => {
     console.log("[WebRTC Guest] Connessione chiusa dall'Host.");
