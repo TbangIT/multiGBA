@@ -275,7 +275,6 @@
           <select id="hostScreenView" class="mode-select" style="width: 100%;">
             <option value="solo" selected>Solo il mio schermo (240x160)</option>
             <option value="split">Split-Screen Orizzontale (2 Schermi - 480x160)</option>
-            <option value="grid">Griglia 2x2 (3-4 Schermi - 480x320)</option>
           </select>
         </div>
 
@@ -292,11 +291,11 @@
           </div>
           <div class="status-notice" id="hostStatusNotice">In attesa che i compagni aprano il link ed entrino nella stanza...</div>
 
-          <!-- Lobby Giocatori Connessi (1-4 Giocatori) -->
+          <!-- Lobby Giocatori Connessi (2 Giocatori) -->
           <div class="lobby-players-box" style="margin: 14px 0; text-align: left;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
               <span style="font-size: 11px; font-weight: bold; color: #a1a1aa; text-transform: uppercase;">Lobby Giocatori:</span>
-              <span id="hostLobbyCountBadge" class="badge" style="font-size: 11px; padding: 2px 8px;">1 / 4 Giocatori</span>
+              <span id="hostLobbyCountBadge" class="badge" style="font-size: 11px; padding: 2px 8px;">1 / 2 Giocatori</span>
             </div>
             <div id="hostLobbyPlayerList" style="display: flex; flex-direction: column; gap: 6px;">
               <div class="lobby-player-row connected">
@@ -306,25 +305,17 @@
               </div>
               <div class="lobby-player-row empty" id="hostLobbySlot2">
                 <span class="lobby-player-tag lobby-tag-p2">P2</span>
-                <span style="flex: 1; margin-left: 8px; color: #71717a;" id="hostLobbyP2Name">In attesa...</span>
-                <span class="lobby-status-badge lobby-status-waiting" id="hostLobbyP2Status">Vuoto</span>
+                <span style="flex: 1; margin-left: 8px; color: #71717a;" id="hostLobbyP2Name">In attesa compagno...</span>
+                <span class="lobby-status-badge lobby-status-waiting" id="hostLobbyP2Status">In attesa</span>
               </div>
-              <div class="lobby-player-row empty" id="hostLobbySlot3">
-                <span class="lobby-player-tag lobby-tag-p3">P3</span>
-                <span style="flex: 1; margin-left: 8px; color: #71717a;" id="hostLobbyP3Name">In attesa...</span>
-                <span class="lobby-status-badge lobby-status-waiting" id="hostLobbyP3Status">Vuoto</span>
-              </div>
-              <div class="lobby-player-row empty" id="hostLobbySlot4">
-                <span class="lobby-player-tag lobby-tag-p4">P4</span>
-                <span style="flex: 1; margin-left: 8px; color: #71717a;" id="hostLobbyP4Name">In attesa...</span>
-                <span class="lobby-status-badge lobby-status-waiting" id="hostLobbyP4Status">Vuoto</span>
-              </div>
+              <div class="lobby-player-row empty" id="hostLobbySlot3" style="display: none;"></div>
+              <div class="lobby-player-row empty" id="hostLobbySlot4" style="display: none;"></div>
             </div>
           </div>
 
-          <!-- Pulsante Avvia Partita (Host controlla quanti giocatori sono connessi) -->
+          <!-- Pulsante Avvia Partita (Host controlla l'avvio della partita) -->
           <button class="primary" id="btnHostStartGame" disabled style="width: 100%; justify-content: center; padding: 12px; font-size: 14px; font-weight: bold; margin-bottom: 8px; background: #374151; border-color: #4b5563; cursor: not-allowed;">
-            [▶] In attesa di altri giocatori (min. 2)...
+            [▶] In attesa del compagno...
           </button>
 
           <!-- Fallback manuale -->
@@ -357,7 +348,6 @@
           <select id="joinScreenView" class="mode-select" style="width: 100%;">
             <option value="solo" selected>Solo il mio schermo (240x160)</option>
             <option value="split">Split-Screen Orizzontale (2 Schermi - 480x160)</option>
-            <option value="grid">Griglia 2x2 (3-4 Schermi - 480x320)</option>
           </select>
         </div>
 
