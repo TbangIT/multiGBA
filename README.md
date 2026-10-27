@@ -67,3 +67,6 @@ Se hai un tuo server TURN (o un servizio a cui ti sei iscritto), aggiungilo in `
 ```bash
 cd tests && npm install && npm test
 ```
+
+Include `audio.js` / `audio_ring.js`: verificano velocita' di gioco e continuita' audio con il core wasm reale
+(in console del browser, `gbaAudioDebug()` mostra lo stato dell'audio in tempo reale).
