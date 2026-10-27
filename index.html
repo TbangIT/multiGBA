@@ -467,6 +467,14 @@
     </div>
   </div>
 
-  <script src="app.js?v=2.6"></script>
+  <!-- Rete: ogni file ha un solo compito. Ordine: librerie -> moduli di rete -> app.js -->
+  <script src="net/vendor/mqtt.min.js"></script>      <!-- mqtt.js 5.16.1 (MIT), incluso: nessuna CDN -->
+  <script src="net/mqtt-codec.js?v=2.10"></script>    <!-- cifratura AES-GCM, frammentazione, JSON+binari -->
+  <script src="net/mqtt-brokers.js?v=2.10"></script>  <!-- elenco broker, connessione, misura latenza -->
+  <script src="net/mqtt-link.js?v=2.10"></script>     <!-- relay MQTT: host, guest, failover -->
+  <script src="net/webrtc-link.js?v=2.10"></script>   <!-- ICE + canale dati veloce -->
+  <script src="net/sram-codec.js?v=2.10"></script>    <!-- compressione salvataggi -->
+  <script src="net/lockstep-timing.js?v=2.10"></script><!-- delay adattivo, ping/RTT, stalli, CPU -->
+  <script src="app.js?v=2.10"></script>
 </body>
 </html>
