@@ -9,9 +9,24 @@
 // comparire "Sincronizzazione Rete...". Ora ogni lato sceglie il proprio delay in base a RTT e
 // jitter misurati. Il delay e' una scelta del MITTENTE: il ricevente cerca solo il frame che gli
 // serve, quindi i due lati possono avere delay diversi senza negoziare nulla.
-const NET_DELAY_MIN = 2;
-const NET_DELAY_MAX = 10;
-const NET_DELAY_INITIAL = 4;          // i frame 0..3 sono sempre "tasti a 0" su entrambi i lati
+// I limiti sono in MILLISECONDI REALI e si convertono in frame in base alla velocita': a 2x un frame dura 8,4 ms, quindi lo stesso
+// ritardo di rete richiede il DOPPIO dei frame. Prima si usava sempre GBA_FRAME_MS: a 2x il delay risultava meta' di quello necessario
+// (e bloccato a 10 frame = 84 ms): centinaia di stalli al minuto anche con ping basso.
+const NET_DELAY_MIN_MS = 33;
+const NET_DELAY_MAX_MS = 167;
+const NET_DELAY_INITIAL = 4;          // FRAME, uguale su tutti i client (protocollo): i frame 0..3 sono sempre "tasti a 0"
+const netSpeed = () => (roomSpeed === 2 ? 2 : 1);
+const netFrameMs = () => GBA_FRAME_MS / netSpeed();                        // durata reale di un passo di emulazione
+const netDelayMin = () => Math.max(2, Math.ceil(NET_DELAY_MIN_MS / netFrameMs()));
+const netDelayMax = () => Math.ceil(NET_DELAY_MAX_MS / netFrameMs());      // 10 a 1x, 20 a 2x
+// Profilo "lag": quanto margine si tiene sopra il ritardo di rete misurato. Scelta del SINGOLO giocatore (il delay e' del mittente):
+// il lag che senti sul tuo personaggio e' il TUO delay. F4 per cambiare profilo.
+const NET_LAG_MODES = {
+  low:      { label: "minimo",     marginMs: 4,  k1: 1.0, k2: 1.5 },   // rete ottima: piu' reattivo, piu' rischio di micro-stalli
+  balanced: { label: "bilanciato", marginMs: 12, k1: 1.5, k2: 2.0 },
+  safe:     { label: "sicuro",     marginMs: 20, k1: 3.0, k2: 3.0 },
+};
+let netLagMode = "balanced";
 const NET_PING_EVERY_MS = 500;
 const NET_OVERLAY_AFTER_MS = 1200;    // l'overlay compare solo per stalli davvero visibili
 const NET_EMERGENCY_AFTER_MS = 3000;
@@ -47,7 +62,7 @@ function netResetAdaptiveState() {
 }
 
 function netSetDelay(d, why) {
-  d = Math.max(NET_DELAY_MIN, Math.min(NET_DELAY_MAX, d | 0));
+  d = Math.max(netDelayMin(), Math.min(netDelayMax(), d | 0));
   if (d === netInputDelay) return;
   console.log(`[Net] input delay ${netInputDelay} -> ${d} frame (${why}, rtt=${netRttMs.toFixed(0)}ms dev=${netRttDev.toFixed(0)}ms)`);
   netInputDelay = d;
@@ -58,17 +73,18 @@ function netSetDelay(d, why) {
 // Delay desiderato: meta' RTT + margine di jitter + 1 frame (il ricevente legge una volta per frame).
 function netWantedDelay() {
   if (!netRttSamples) return Math.max(NET_DELAY_INITIAL, netHostDelay);
+  const m = NET_LAG_MODES[netLagMode];
   let budget;
   if (myPlayerId === 1) {
     // Con 3-4 giocatori il percorso peggiore e' guest->host->guest: somma delle due tratte piu' lente.
-    const k = netPeerRtt.size > 1 ? 2 : 1.5;
+    const k = netPeerRtt.size > 1 ? m.k2 : m.k1;
     const legs = [...netPeerRtt.values()].map((x) => x.rtt / 2 + k * x.dev).sort((a, b) => b - a);
-    budget = (legs[0] || 0) + (legs[1] || 0) + 12;
+    budget = (legs[0] || 0) + (legs[1] || 0) + m.marginMs;
   } else {
-    budget = netRttMs / 2 + 2 * netRttDev + 12;
+    budget = netRttMs / 2 + m.k2 * netRttDev + m.marginMs;
   }
-  const f = Math.ceil(budget / GBA_FRAME_MS);
-  return Math.max(NET_DELAY_MIN, Math.min(NET_DELAY_MAX, myPlayerId === 1 ? f : Math.max(f, netHostDelay)));
+  const f = Math.ceil(budget / netFrameMs());
+  return Math.max(netDelayMin(), Math.min(netDelayMax(), myPlayerId === 1 ? f : Math.max(f, netHostDelay)));
 }
 
 function netAdaptDelay(now) {
@@ -79,6 +95,22 @@ function netAdaptDelay(now) {
              !netStallTimes.some((t) => now - t < 6000)) {
     netSetDelay(netInputDelay - 1, "rete stabile");   // si scende piano, un frame alla volta
   }
+}
+
+// Cambio velocita' (1x <-> 2x): il ritardo in millisecondi deve restare lo stesso, quindi si riscalano i frame.
+function netRescaleDelay(oldSpeed, newSpeed) {
+  if (oldSpeed === newSpeed || currentMode !== "netplay" || !netplayConnected) return;
+  netInputDelay = Math.max(netDelayMin(), Math.min(netDelayMax(), Math.round(netInputDelay * newSpeed / oldSpeed)));
+  netHostDelay = Math.round(netHostDelay * newSpeed / oldSpeed);
+  netLastDelayChange = performance.now();
+  netUpdateBadge();
+}
+function netCycleLagMode() {
+  const order = Object.keys(NET_LAG_MODES);
+  netLagMode = order[(order.indexOf(netLagMode) + 1) % order.length];
+  netAdaptDelay(performance.now());
+  netUpdateBadge();
+  return netLagMode;
 }
 
 function netNoteStall(now) {
@@ -97,7 +129,7 @@ function netUpdateBadge() {
   if (currentMode !== "netplay" || !netplayConnected) { el.style.display = "none"; return; }
   el.style.display = "";
   const ping = netRttSamples ? `${Math.round(netRttMs)} ms` : "...";
-  el.textContent = `Ping ${ping} | Delay ${netInputDelay}f | CPU ${Math.round(netCpuLoad * 100)}%`;
+  el.textContent = `Ping ${ping} | Lag ${Math.round(netInputDelay * netFrameMs())} ms (${netInputDelay}f) | CPU ${Math.round(netCpuLoad * 100)}%`;
 }
 
 function netPacketIsPing(buf) {
