@@ -1324,7 +1324,7 @@ const NET_DELAY_MIN = 2;
 const NET_DELAY_MAX = 10;
 const NET_DELAY_INITIAL = 4;          // i frame 0..3 sono sempre "tasti a 0" su entrambi i lati
 const NET_PING_EVERY_MS = 500;
-const NET_OVERLAY_AFTER_MS = 400;     // l'overlay compare solo per stalli davvero visibili
+const NET_OVERLAY_AFTER_MS = 1200;    // l'overlay compare solo per stalli davvero visibili
 const NET_EMERGENCY_AFTER_MS = 3000;
 const NET_LOST_AFTER_MS = 10000;
 const NET_PING_MAGIC = 0x52425047;    // 'RBPG'
@@ -1334,6 +1334,8 @@ let netRttMs = 0, netRttDev = 0, netRttSamples = 0, netRttMin = 0;
 let netPingTimer = null;
 let netPeerRtt = new Map();           // solo host: RTT/jitter di OGNI guest (prima: un'unica media mescolata)
 let netHostDelay = 0;                 // solo guest: delay minimo raccomandato dall'host (copre guest->host->guest)
+let netFastBroken = false, netOverlayHideTimer = null, netCpuHot = 0, netCpuLoad = 0;
+const netPeerSeen = {};              // pid -> ultimo istante in cui e' arrivato un suo pacchetto (vivo != lento)
 let netHoldStart = false, netHostLoaded = false, netGoSent = false, netGoTimer = null;
 let netEmuMs = 0;                     // costo medio (ms) di un passo di emulazione: distingue CPU da rete
 let netLastDelayChange = 0;
@@ -1346,6 +1348,8 @@ function netResetAdaptiveState() {
   netLastScheduled = NET_DELAY_INITIAL - 1;
   netRttMs = 0; netRttDev = 0; netRttSamples = 0; netRttMin = 0;
   netPeerRtt.clear(); netHostDelay = 0; netEmuMs = 0;
+  if (netOverlayHideTimer) { clearTimeout(netOverlayHideTimer); netOverlayHideTimer = null; }
+  netFastBroken = false; netCpuHot = 0; for (const k in netPeerSeen) delete netPeerSeen[k];
   netLastDelayChange = performance.now();
   netStalling = false; netStallStart = 0; netOverlayLevel = 0;
   netStallTimes = [];
@@ -1404,7 +1408,7 @@ function netUpdateBadge() {
   if (currentMode !== "netplay" || !netplayConnected) { el.style.display = "none"; return; }
   el.style.display = "";
   const ping = netRttSamples ? `${Math.round(netRttMs)} ms` : "...";
-  el.textContent = `Ping ${ping} | Delay ${netInputDelay}f`;
+  el.textContent = `Ping ${ping} | Delay ${netInputDelay}f | CPU ${Math.round(netCpuLoad * 100)}%`;
 }
 
 // Canale dati "veloce" (input + ping): non ordinato, zero ritrasmissioni. Il canale PeerJS e' ordinato+affidabile:
@@ -1412,6 +1416,7 @@ function netUpdateBadge() {
 // Ogni pacchetto porta gia' gli ultimi 32 input, quindi una perdita si recupera col pacchetto dopo.
 // Compatibile con client vecchi: se il canale non si apre si ricade su conn.send().
 function netOpenFastChannel(conn, onData) {
+  if (/[?&]fast=0\b/.test(location.search)) return;   // ?fast=0 => solo canale affidabile
   try {
     const pc = conn.peerConnection;
     if (!pc || typeof pc.createDataChannel !== "function") return;
@@ -1421,10 +1426,21 @@ function netOpenFastChannel(conn, onData) {
     conn._fast = dc;
   } catch (e) { console.warn("[Net] canale veloce non disponibile:", e); }
 }
+// Se il canale veloce non consegna (NAT/browser strani) si torna al canale affidabile per tutta la sessione,
+// per tutti i giocatori: meglio un po' di ritardo che una partita bloccata.
+function netFastFallback(notify) {
+  if (netFastBroken) return;
+  netFastBroken = true;
+  console.warn("[Net] canale veloce disattivato: uso il canale affidabile");
+  if (!notify) return;
+  const m = { type: "fast_off" };
+  if (myPlayerId === 1) { for (const g of Object.values(connectedGuests)) if (g && g.conn && g.conn.open) { try { g.conn.send(m); } catch (e) {} } }
+  else if (activeP2PConn && activeP2PConn.open) { try { activeP2PConn.send(m); } catch (e) {} }
+}
 function netSend(conn, buf) {
   if (!conn) return;
   const dc = conn._fast;
-  if (dc && dc.readyState === "open") { try { dc.send(buf); return; } catch (e) {} }
+  if (!netFastBroken && dc && dc.readyState === "open") { try { dc.send(buf); return; } catch (e) {} }
   if (conn.open) { try { conn.send(buf); } catch (e) {} }
 }
 
@@ -1477,10 +1493,25 @@ function netHandlePing(buf, replyConn) {
   }
 }
 
+function netCheckCpu() {
+  if (currentMode !== "netplay" || !isRunning || !netEmuMs) return;
+  const speed = roomSpeed === 2 ? 2 : 1;
+  netCpuLoad = netEmuMs / (GBA_FRAME_MS / speed);
+  netCpuHot = netCpuLoad > 0.65 ? netCpuHot + 1 : 0;
+  if (speed === 2 && netCpuHot >= 4) {   // 2 s di CPU quasi satura a 2x: scendere a 1x per TUTTI (change_speed esiste gia')
+    netCpuHot = 0;
+    setSpeed(1);
+    try {
+      if (myPlayerId === 1) broadcastToGuests({ type: "change_speed", speed: 1 });
+      else if (activeP2PConn && activeP2PConn.open) activeP2PConn.send({ type: "change_speed", speed: 1 });
+    } catch (e) {}
+    showInGameNotice("[CPU] Un PC non regge i 2x: velocita' portata a 1x per tutti", 7000);
+  }
+}
 function netStartPings() {
   netStopPings();
   netPingTimer = setInterval(() => {
-    if (currentMode === "netplay" && netplayConnected) netSendPing(0, performance.now());
+    if (currentMode === "netplay" && netplayConnected) { netSendPing(0, performance.now()); netCheckCpu(); }
     else { netStopPings(); netUpdateBadge(); }
   }, NET_PING_EVERY_MS);
 }
@@ -1495,6 +1526,7 @@ window.gbaNetDebug = () => ({
   samples: netRttSamples, hostDelay: netHostDelay,
   peers: [...netPeerRtt.values()].map((x) => ({ rtt: Math.round(x.rtt), jitter: Math.round(x.dev) })),
   // se emuMs si avvicina a 16.7 il collo di bottiglia e' la CPU, non la rete
+  cpuLoadPct: Math.round(netCpuLoad * 100), fastBroken: netFastBroken,
   callsPerStep: coreStepsTotal ? +(coreCallsTotal / coreStepsTotal).toFixed(2) : null,   // ~1.5 = il bug del 65% era attivo
   emuMs: +netEmuMs.toFixed(1), cpuPct: Math.round(netEmuMs / GBA_FRAME_MS * 100),
   stalls: netStallCount, stallMsTotal: Math.round(netStallMsTotal), stallMsMax: Math.round(netStallMsMax),
@@ -1599,6 +1631,7 @@ function pumpEmulation(now) {
   const maxSteps = 6 * speed + extraCatchup; // fino a ~100 ms di recupero dopo uno stallo
 
   let steps = 0;
+  const sliceStart = performance.now();
   while (pumpDebtMs >= GBA_FRAME_MS && steps < maxSteps) {
     const r = runSingleSimulationFrame();   // 1 = avanzato, 0 = fermo, -1 = in attesa del compagno
     if (r === 0) {
@@ -1608,6 +1641,7 @@ function pumpEmulation(now) {
     if (r < 0) break;                       // in attesa: il tempo "dovuto" NON si butta, si recupera dopo
     pumpDebtMs -= GBA_FRAME_MS;
     steps++;
+    if (performance.now() - sliceStart > 11) break;   // CPU satura: recupero spalmato sui frame successivi, non a raffica
   }
 
   if (currentMode === "netplay") {
@@ -1662,11 +1696,15 @@ function runSingleSimulationFrame() {
         netNoteStall(nowMs);
       }
       const waited = nowMs - netStallStart;
+      if (waited >= 400 && netOverlayHideTimer) { clearTimeout(netOverlayHideTimer); netOverlayHideTimer = null; }   // i micro-stalli non tengono acceso l'overlay
+      // silenzio = tempo senza ricevere NULLA da quel giocatore. Un PC lento ma vivo non e' una connessione persa.
+      const silent = nowMs - Math.max(netPeerSeen[missingPlayer] || 0, netStallStart);
       consecutiveWaitTicks++;
-      if (waited >= NET_EMERGENCY_AFTER_MS) {
+      if (waited > 2000) netFastFallback(true);
+      if (silent >= NET_EMERGENCY_AFTER_MS) {
         activateEmergencyRecoveryMode(`Compagno P${missingPlayer} non risponde da oltre 3s!`);
       }
-      if (waited > NET_LOST_AFTER_MS) {
+      if (silent > NET_LOST_AFTER_MS || waited > 30000) {
         if (netOverlayLevel !== 2) {
           netOverlayLevel = 2;
           showCanvasOverlay(
@@ -1682,7 +1720,7 @@ function runSingleSimulationFrame() {
         showCanvasOverlay(
           "[...]",
           "Sincronizzazione Rete...",
-          `In attesa dei pacchetti del Giocatore ${missingPlayer}...`,
+          silent < 1500 ? `Il Giocatore ${missingPlayer} sta rallentando la partita (PC o rete lenti)...` : `In attesa dei pacchetti del Giocatore ${missingPlayer}...`,
           "La simulazione riprenderà automaticamente non appena arrivano i dati"
         );
       }
@@ -1694,9 +1732,11 @@ function runSingleSimulationFrame() {
       netStallMsTotal += dur;
       if (dur > netStallMsMax) netStallMsMax = dur;
       netStalling = false;
-      if (netOverlayLevel !== 0) {
-        netOverlayLevel = 0;
-        hideCanvasOverlay();
+      if (netOverlayLevel !== 0 && !netOverlayHideTimer) {
+        netOverlayHideTimer = setTimeout(() => {   // sparisce solo dopo 0,8 s di gioco fluido
+          netOverlayHideTimer = null;
+          if (!netStalling) { netOverlayLevel = 0; hideCanvasOverlay(); }
+        }, 800);
       }
     }
     consecutiveWaitTicks = 0;
@@ -2229,6 +2269,7 @@ function setupHostGuestConnection(conn, slot) {
         if (payload && payload.byteLength >= 48) {
           const gbrb = unpackGbrb(payload);
           const pid = gbrb.origin;
+          netPeerSeen[pid] = performance.now();
           if (gbrb && gbrb.samples && gbrb.samples.length > 0 && pid >= 1 && pid <= 4) {
             if (!remotePlayerInputs[pid]) remotePlayerInputs[pid] = {};
             for (const s of gbrb.samples) {
@@ -2305,6 +2346,8 @@ function handleHostControlMessage(msg, slot, conn) {
     }
     try { conn.send({ type: "bundle_ack" }); } catch(e) {}
     checkAndLaunchHostGame();
+  } else if (msg.type === "fast_off") {
+    netFastFallback(true);
   } else if (msg.type === "core_ready") {
     if (connectedGuests[slot]) connectedGuests[slot].coreReady = true;
     netHostTryGo(false);
@@ -2412,6 +2455,7 @@ function setupGuestConnection(conn) {
         if (payload && payload.byteLength >= 48) {
           const gbrb = unpackGbrb(payload);
           const pid = gbrb.origin;
+          netPeerSeen[pid] = performance.now();
           if (gbrb && gbrb.samples && gbrb.samples.length > 0 && pid >= 1 && pid <= 4) {
             if (!remotePlayerInputs[pid]) remotePlayerInputs[pid] = {};
             for (const s of gbrb.samples) {
@@ -2518,6 +2562,8 @@ function handleGuestControlMessage(msg, conn) {
     netplayModal.style.display = "none";
     activeNetplayBanner.style.display = "block";
     activeNetplayDetail.innerText = `Collegato come Giocatore ${myPlayerId}/${msg.total_players} (${netplayRoomSpeed}x Speed - P2P Star).`;
+  } else if (msg.type === "fast_off") {
+    netFastFallback(false);
   } else if (msg.type === "go") {
     netGo();
   } else if (msg.type === "bundle_ack") {
