@@ -8,7 +8,8 @@ Ordine di caricamento (index.html): librerie -> moduli `net/` -> `app.js`. Sono 
 | `mqtt-codec.js` | cifratura AES-GCM (chiave dal codice stanza), frammentazione, JSON con binari |
 | `mqtt-brokers.js` | elenco broker pubblici, connessione con timeout, misura della latenza reale |
 | `mqtt-link.js` | relay MQTT: `MqttConn` (stessa interfaccia di PeerJS), host, guest, failover |
-| `lockstep-timing.js` | delay input adattivo, ping/RTT per giocatore, stalli, carico CPU |
+| `lockstep-timing.js` | delay input adattivo (in ms reali, scala con la velocita'), ping/RTT per giocatore, stalli, carico CPU, profili lag |
+| `perf-monitor.js` | diagnostica: rete o CPU? Pannello F3, profilo lag F4, report copiabile |
 | `sram-codec.js` | compressione dei salvataggi .sav per l'avvio |
 | `vendor/mqtt.min.js` | mqtt.js 5.16.1 (MIT), incluso: nessuna CDN |
 

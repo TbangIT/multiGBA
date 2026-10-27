@@ -1274,7 +1274,9 @@ function netHostTryGo(force) {
 }
 
 // Frame Timing and Animation Loop
-let frameCount = 0;
+let frameCount = 0;              // passi di EMULAZIONE (a 2x sono 120/s)
+let renderCount = 0, renderPending = false, lastRenderAt = 0;
+const RENDER_MIN_MS = 1000 / 60 - 1.2;   // schermo: massimo 60 disegni al secondo (anche a 2x e con monitor 120/144 Hz)
 let lastFpsTime = performance.now();
 let lastAutoSavestateWallClock = Date.now();
 let totalFramesSimulated = 0;
@@ -1398,7 +1400,7 @@ function pumpEmulation(now) {
   const extraCatchup = (currentMode === "netplay" && maxRemoteFrame > totalFramesSimulated + netInputDelay) ? 1 : 0;
   const maxSteps = 6 * speed + extraCatchup; // fino a ~100 ms di recupero dopo uno stallo
 
-  let steps = 0;
+  let steps = 0, waitingPeer = false;
   const sliceStart = performance.now();
   while (pumpDebtMs >= GBA_FRAME_MS && steps < maxSteps) {
     const r = runSingleSimulationFrame();   // 1 = avanzato, 0 = fermo, -1 = in attesa del compagno
@@ -1406,11 +1408,14 @@ function pumpEmulation(now) {
       pumpDebtMs = 0;
       break;
     }
-    if (r < 0) break;                       // in attesa: il tempo "dovuto" NON si butta, si recupera dopo
+    if (r < 0) { waitingPeer = true; break; }   // in attesa: il tempo "dovuto" NON si butta, si recupera dopo
     pumpDebtMs -= GBA_FRAME_MS;
     steps++;
     if (performance.now() - sliceStart > 11) break;   // CPU satura: recupero spalmato sui frame successivi, non a raffica
   }
+
+  // Restano passi da fare, non si aspetta nessuno e il tempo e' finito: e' la CPU che non regge (non la rete)
+  if (!waitingPeer && pumpDebtMs >= GBA_FRAME_MS) perf.behind();
 
   if (currentMode === "netplay") {
     const cap = GBA_FRAME_MS * (netInputDelay + 4);
@@ -1434,15 +1439,18 @@ function runSingleSimulationFrame() {
       localInputHistory.push({ frame: fr, keys: currentKeys });
     }
     if (targetFrame > netLastScheduled) netLastScheduled = targetFrame;
-    while (localInputHistory.length > 48) localInputHistory.shift();
+    while (localInputHistory.length > 80) localInputHistory.shift();
 
-    // Send binary packet over WebRTC DataChannel (rolling 32-frame history)
-    const gbrb = packGbrbInput(myPlayerId, netLastScheduled, localInputHistory);
-    const rbal = packRbalFrame(0, gbrb);
-    if (myPlayerId === 1) {
-      for (const guest of Object.values(connectedGuests)) if (guest) netSend(guest.conn, rbal);
-    } else {
-      netSend(activeP2PConn, rbal);
+    // Pacchetto con la storia degli ultimi 64 frame (a 2x serve piu' storia: i delay di due giocatori si sommano).
+    // A 2x se ne invia uno ogni 2 passi (sempre se si e' fermi in attesa): la storia copre il frame saltato, meta' pacchetti e CPU.
+    if (netSpeed() === 1 || (totalFramesSimulated & 1) === 0 || netStalling) {
+      const gbrb = packGbrbInput(myPlayerId, netLastScheduled, localInputHistory);
+      const rbal = packRbalFrame(0, gbrb);
+      if (myPlayerId === 1) {
+        for (const guest of Object.values(connectedGuests)) if (guest) netSend(guest.conn, rbal);
+      } else {
+        netSend(activeP2PConn, rbal);
+      }
     }
 
     // Strict Lockstep Check: Do we have all active remote players' inputs for totalFramesSimulated?
@@ -1461,6 +1469,7 @@ function runSingleSimulationFrame() {
         netStalling = true;
         netStallStart = nowMs;
         netStallCount++;
+        perf.stallBegin(missingPlayer);
         netNoteStall(nowMs);
       }
       const waited = nowMs - netStallStart;
@@ -1497,6 +1506,7 @@ function runSingleSimulationFrame() {
 
     if (netStalling) {
       const dur = performance.now() - netStallStart;
+      perf.stallEnd(dur);
       netStallMsTotal += dur;
       if (dur > netStallMsMax) netStallMsMax = dur;
       netStalling = false;
@@ -1508,6 +1518,11 @@ function runSingleSimulationFrame() {
       }
     }
     consecutiveWaitTicks = 0;
+
+    // Margine = quanti frame di input remoto ho "in anticipo". ~0 = rete al limite, alto = rete con ampio respiro
+    let marginFr = Infinity;
+    for (const pid of connectedPlayerIds) if (pid !== myPlayerId) marginFr = Math.min(marginFr, remotePlayerMaxFrame[pid] - totalFramesSimulated);
+    if (isFinite(marginFr)) perf.margin(marginFr);
 
     for (let c = 0; c < netplayPlayerCount; c++) {
       const pid = c + 1;
@@ -1536,8 +1551,10 @@ function runSingleSimulationFrame() {
 
   // 2. Step GBA Emulation: avanzamento deterministico 1:1 con sincronizzazione SIO hardware
   const emuT0 = performance.now();
-  stepCoreOneFrame();
-  netEmuMs = netEmuMs ? netEmuMs * 0.95 + (performance.now() - emuT0) * 0.05 : performance.now() - emuT0;
+  const emuCalls = stepCoreOneFrame();
+  const emuDt = performance.now() - emuT0;
+  netEmuMs = netEmuMs ? netEmuMs * 0.95 + emuDt * 0.05 : emuDt;
+  perf.step(emuDt, emuCalls, currentKeys !== 0);
   totalFramesSimulated++;
   frameCount++;
 
@@ -1684,18 +1701,27 @@ function mainRafLoop(now) {
   }
 
   if (isRunning && window.Module) {
+    const pumpT0 = performance.now();
     const steps = pumpEmulation(now);
+    perf.raf(now, performance.now() - pumpT0);
 
-    if (steps > 0) {
+    // Si emula quanto serve (2x = 2 passi per 16,7 ms) ma si disegna al massimo a 60 FPS: l'ultimo frame pronto non si perde.
+    if (steps > 0) renderPending = true;
+    if (renderPending && now - lastRenderAt >= RENDER_MIN_MS) {
+      const r0 = performance.now();
       renderCanvasOnly();
+      perf.render(performance.now() - r0);
+      lastRenderAt = now; renderPending = false; renderCount++;
     }
+    perf.tick(now);
 
-    // FPS update every 500ms
+    // FPS update every 500ms: FPS = frame DISEGNATI; fra parentesi i passi di emulazione se diversi (2x)
     if (now - lastFpsTime >= 500) {
-      const actualFps = Math.round((frameCount * 1000) / (now - lastFpsTime));
-      fpsBadge.innerHTML = `<span class="indicator"></span> ${actualFps} FPS`;
-      window.lastReportedFps = actualFps;
-      frameCount = 0;
+      const dtF = now - lastFpsTime;
+      const drawFps = Math.round((renderCount * 1000) / dtF), simFps = Math.round((frameCount * 1000) / dtF);
+      fpsBadge.innerHTML = `<span class="indicator"></span> ${drawFps} FPS` + (simFps > drawFps + 4 ? ` <small>(emul. ${simFps}/s)</small>` : "");
+      window.lastReportedFps = drawFps; window.lastReportedSps = simFps;
+      frameCount = 0; renderCount = 0;
       lastFpsTime = now;
     }
   } else {
@@ -1705,12 +1731,13 @@ function mainRafLoop(now) {
 }
 
 function setSpeed(speed) {
+  const oldSpeed = roomSpeed === 2 ? 2 : 1;
   roomSpeed = speed;
   if (timerWorker) {
     timerWorker.postMessage({ action: "interval", interval: 16 });
   }
   if (speed === 2) {
-    speedBadge.innerText = "Velocita: 2x (120 FPS)";
+    speedBadge.innerText = "Velocita: 2x (emulazione doppia, schermo max 60 FPS)";
     speedBadge.className = "badge speed-2x";
     btnSpeedToggle.innerText = "[>>] Velocita: 2x";
   } else {
@@ -1719,6 +1746,7 @@ function setSpeed(speed) {
     speedBadge.className = "badge";
     btnSpeedToggle.innerText = "[>>] Velocita: 1x";
   }
+  netRescaleDelay(oldSpeed, roomSpeed === 2 ? 2 : 1);   // stesso ritardo in millisecondi
   audioApplyRatio();
 }
 
@@ -1889,7 +1917,7 @@ function packGbrbInput(origin, frame, recentInputs) {
   const sampleList = recentInputs && recentInputs.length > 0
     ? recentInputs
     : [{ frame: frame, keys: currentKeys }];
-  const sampleCount = Math.min(sampleList.length, 32);
+  const sampleCount = Math.min(sampleList.length, 64);
   const totalSize = 40 + sampleCount * 8;
   const buf = new ArrayBuffer(totalSize);
   const view = new DataView(buf);
