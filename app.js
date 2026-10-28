@@ -168,6 +168,28 @@ let dualPixels = new Uint32Array(dualImageData.data.buffer);
 let gridImageData = ctx.createImageData(GBA_WIDTH * 2, GBA_HEIGHT * 2);
 let gridPixels = new Uint32Array(gridImageData.data.buffer);
 
+function updateCanvasAspectRatio(aspectOrMode) {
+  let ratio = "3 / 2";
+  if (aspectOrMode === "split" || aspectOrMode === "dual" || aspectOrMode === "3 / 1") {
+    ratio = "3 / 1";
+  } else if (aspectOrMode === "grid" || aspectOrMode === "480 / 320") {
+    ratio = "3 / 2";
+  } else {
+    ratio = "3 / 2";
+  }
+  if (canvas) {
+    canvas.style.removeProperty("width");
+    canvas.style.removeProperty("height");
+    canvas.style.width = "";
+    canvas.style.height = "";
+    canvas.style.setProperty("--gba-aspect-ratio", ratio);
+  }
+  const wrapper = document.getElementById("screenWrapper");
+  if (wrapper) wrapper.style.setProperty("--gba-aspect-ratio", ratio);
+}
+window.updateCanvasAspectRatio = updateCanvasAspectRatio;
+updateCanvasAspectRatio("solo");
+
 // UI Elements
 const loadingOverlay = document.getElementById("loadingOverlay");
 const loadingText = document.getElementById("loadingText");
@@ -1027,8 +1049,7 @@ function startSinglePlayer(sramBytes) {
 
   canvas.width = GBA_WIDTH;
   canvas.height = GBA_HEIGHT;
-  canvas.style.width = "720px";
-  canvas.style.height = "480px";
+  updateCanvasAspectRatio("solo");
   modeBadge.innerText = "Modalita: Singolo (P1)";
   currentMode = "solo";
   netplayPlayerCount = 1;
@@ -1075,8 +1096,7 @@ function startDualScreenCoop() {
 
   canvas.width = GBA_WIDTH * 2;
   canvas.height = GBA_HEIGHT;
-  canvas.style.width = "960px";
-  canvas.style.height = "320px";
+  updateCanvasAspectRatio("dual");
   modeBadge.innerText = "Modalita: Dual Co-Op Link (P1 + P2)";
   currentMode = "dual";
   netplayPlayerCount = 2;
@@ -1788,7 +1808,7 @@ function getLobbyRoster() {
   ];
   for (let s = 2; s <= 4; s++) {
     const g = connectedGuests[s];
-    if (g && g.conn && g.conn.open) {
+    if (g && g.conn && g.conn.open && !g.isPending) {
       roster.push({
         slot: s,
         name: g.name || `Giocatore ${s}`,
@@ -1804,7 +1824,7 @@ function updateHostLobbyUI() {
   const slot1NameEl = document.getElementById("hostSlot1Name");
   if (slot1NameEl) slot1NameEl.innerText = `${hostName} (Tu)`;
 
-  const readyGuests = Object.values(connectedGuests).filter(g => g.conn && g.conn.open);
+  const readyGuests = Object.values(connectedGuests).filter(g => g.conn && g.conn.open && !g.isPending);
   const totalCount = 1 + readyGuests.length;
 
   const countBadge = document.getElementById("hostLobbyCountBadge");
@@ -1814,11 +1834,11 @@ function updateHostLobbyUI() {
     const row = document.getElementById(`hostSlot${s}`);
     const nameEl = document.getElementById(`hostSlot${s}Name`);
     const statusEl = document.getElementById(`hostSlot${s}Status`);
-    if (!row) continue;
+    const kickBtn = document.getElementById(`btnHostKickSlot${s}`);
 
     const guest = connectedGuests[s];
-    if (guest && guest.conn && guest.conn.open) {
-      row.className = "lobby-player-row connected";
+    if (guest && guest.conn && guest.conn.open && !guest.isPending) {
+      if (row) row.className = "lobby-player-row connected";
       if (nameEl) {
         nameEl.innerText = guest.name || `Giocatore ${s}`;
         nameEl.style.color = "#f4f4f5";
@@ -1827,8 +1847,12 @@ function updateHostLobbyUI() {
         statusEl.className = "lobby-status-badge lobby-status-ready";
         statusEl.innerText = "Pronto";
       }
+      if (kickBtn) {
+        kickBtn.style.display = "inline-flex";
+        kickBtn.disabled = false;
+      }
     } else if (guest) {
-      row.className = "lobby-player-row connected";
+      if (row) row.className = "lobby-player-row connected";
       if (nameEl) {
         nameEl.innerText = guest.name || `Giocatore ${s}`;
         nameEl.style.color = "#a1a1aa";
@@ -1837,8 +1861,12 @@ function updateHostLobbyUI() {
         statusEl.className = "lobby-status-badge lobby-status-connecting";
         statusEl.innerText = "In arrivo...";
       }
+      if (kickBtn) {
+        kickBtn.style.display = "inline-flex";
+        kickBtn.disabled = false;
+      }
     } else {
-      row.className = "lobby-player-row empty";
+      if (row) row.className = "lobby-player-row empty";
       if (nameEl) {
         nameEl.innerText = s === 2 ? "In attesa compagno..." : "Disponibile (opzionale)";
         nameEl.style.color = "#71717a";
@@ -1846,6 +1874,10 @@ function updateHostLobbyUI() {
       if (statusEl) {
         statusEl.className = "lobby-status-badge lobby-status-waiting";
         statusEl.innerText = s === 2 ? "In attesa" : "Disponibile";
+      }
+      if (kickBtn) {
+        kickBtn.style.display = "none";
+        kickBtn.disabled = true;
       }
     }
   }
@@ -1872,6 +1904,32 @@ function updateHostLobbyUI() {
     }
   }
 }
+
+function kickPlayer(slot) {
+  console.log(`[Host] Espulsione Giocatore ${slot}...`);
+  const guest = connectedGuests[slot];
+  if (!guest) return;
+  if (guest.watchdogTimer) {
+    clearTimeout(guest.watchdogTimer);
+    guest.watchdogTimer = null;
+  }
+  if (guest.conn) {
+    try {
+      guest.conn.send({
+        type: "lobby_kick",
+        slot: slot,
+        reason: "Espulso dall'Host"
+      });
+    } catch (e) {}
+    setTimeout(() => {
+      try { guest.conn.close(); } catch (e) {}
+    }, 100);
+  }
+  handleGuestDisconnect(slot);
+  updateHostLobbyUI();
+  showInGameNotice(`[HOST] Giocatore ${slot} rimosso dalla stanza.`, 3000);
+}
+window.kickPlayer = kickPlayer;
 
 function updateGuestLobbyUI(roster, mySlot) {
   const listEl = document.getElementById("joinLobbyPlayerList");
@@ -2009,18 +2067,56 @@ function clearGuestJoinTimeout() {
   }
 }
 
-function setupHostGuestConnection(conn, slot) {
+function setupHostGuestConnection(conn, slot, token) {
+  if (connectedGuests[slot] && connectedGuests[slot].watchdogTimer) {
+    clearTimeout(connectedGuests[slot].watchdogTimer);
+    connectedGuests[slot].watchdogTimer = null;
+  }
+
+  const sessionToken = token || conn.clientSessionToken || (conn.metadata && conn.metadata.session_token) || null;
+  if (sessionToken) conn.clientSessionToken = sessionToken;
+
   connectedGuests[slot] = {
     conn: conn,
     name: `Player ${slot}`,
     sram: null,
-    ready: true
+    ready: false,
+    isPending: true,
+    clientSessionToken: sessionToken,
+    watchdogTimer: null
   };
   connectedPlayerIds.add(slot);
 
+  // Watchdog Anti-Zombie (6 Secondi): se non raggiunge open e non riceve guest_hello entro 6s, prune automatico
+  const watchdog = setTimeout(() => {
+    const cur = connectedGuests[slot];
+    if (cur && (cur.isPending || !cur.ready || !cur.conn || !cur.conn.open)) {
+      console.warn(`[Host] Watchdog anti-zombie scaduto (6s) per slot ${slot}! Nessun guest_hello/open ricevuto. Pruning.`);
+      handleGuestDisconnect(slot);
+    }
+  }, 6000);
+  connectedGuests[slot].watchdogTimer = watchdog;
+
   conn.on("iceStateChanged", (s) => {
     console.log(`[WebRTC ICE Host <-> Guest ${slot}]:`, s);
+    if (s === "failed" || s === "disconnected") {
+      console.warn(`[Host] ICE ${s} per slot ${slot}: avvio disconnessione pulita.`);
+      handleGuestDisconnect(slot);
+    }
   });
+
+  if (conn.peerConnection) {
+    try {
+      conn.peerConnection.addEventListener("iceconnectionstatechange", () => {
+        const s = conn.peerConnection.iceConnectionState;
+        console.log(`[WebRTC RTCPeerConnection ICE Host <-> Guest ${slot}]:`, s);
+        if (s === "failed" || s === "disconnected") {
+          console.warn(`[Host] RTCPeerConnection ICE ${s} per slot ${slot}: disconnessione pulita.`);
+          handleGuestDisconnect(slot);
+        }
+      });
+    } catch (_) {}
+  }
 
   conn.on("open", () => {
     console.log(`[WebRTC Host] DataChannel aperto per Giocatore ${slot}`);
@@ -2089,6 +2185,16 @@ function setupHostGuestConnection(conn, slot) {
 }
 
 function handleGuestDisconnect(slot) {
+  const guest = connectedGuests[slot];
+  if (guest) {
+    if (guest.watchdogTimer) {
+      clearTimeout(guest.watchdogTimer);
+      guest.watchdogTimer = null;
+    }
+    if (guest.conn) {
+      try { guest.conn.close(); } catch (e) {}
+    }
+  }
   delete connectedGuests[slot];
   connectedPlayerIds.delete(slot);
   if (!netplayConnected) {
@@ -2113,8 +2219,25 @@ function handleGuestDisconnect(slot) {
 function handleHostControlMessage(msg, slot, conn) {
   if (msg.type === "guest_hello") {
     console.log(`[WebRTC Host] Ricevuto guest_hello da Giocatore ${slot}:`, msg.name);
-    if (connectedGuests[slot]) {
-      connectedGuests[slot].name = msg.name || `Player ${slot}`;
+    const guest = connectedGuests[slot];
+    const token = msg.session_token || (guest && guest.clientSessionToken) || (conn && (conn.clientSessionToken || (conn.metadata && conn.metadata.session_token)));
+    if (token) {
+      if (guest) guest.clientSessionToken = token;
+      for (let s = 2; s <= 4; s++) {
+        if (s !== slot && connectedGuests[s] && connectedGuests[s].clientSessionToken === token) {
+          console.log(`[Host] Trovato vecchio slot duplicato ${s} con session_token ${token}: pulizia slot.`);
+          handleGuestDisconnect(s);
+        }
+      }
+    }
+    if (guest) {
+      if (guest.watchdogTimer) {
+        clearTimeout(guest.watchdogTimer);
+        guest.watchdogTimer = null;
+      }
+      guest.isPending = false;
+      guest.ready = true;
+      guest.name = msg.name || `Player ${slot}`;
     }
     updateHostLobbyUI();
     broadcastToGuests({
@@ -2197,9 +2320,11 @@ function checkAndLaunchHostGame() {
   activeNetplayDetail.innerText = `Collegato come Giocatore 1/${totalPlayers} (${netplayRoomSpeed}x Speed - P2P Star).`;
 }
 
-function setupGuestConnection(conn) {
+function setupGuestConnection(conn, token) {
   activeP2PConn = conn;
   myPlayerId = 2; // Default, verra aggiornato da lobby_welcome
+  const sessionToken = token || conn.clientSessionToken || (conn.metadata && conn.metadata.session_token) || window.clientSessionToken;
+  if (sessionToken) conn.clientSessionToken = sessionToken;
 
   conn.on("iceStateChanged", (s) => {
     console.log("[WebRTC ICE Guest]:", s);
@@ -2222,7 +2347,8 @@ function setupGuestConnection(conn) {
     try {
       conn.send({
         type: "guest_hello",
-        name: myName
+        name: myName,
+        session_token: sessionToken
       });
     } catch(e) {}
   });
@@ -2276,6 +2402,25 @@ function handleGuestControlMessage(msg, conn) {
     btnJoinExistingRoom.style.display = "block";
     clearGuestJoinTimeout();
     stopP2PHandshakeTimer();
+    document.body.classList.remove("in-netplay");
+  } else if (msg.type === "lobby_kick") {
+    console.warn("[Guest] Ricevuto lobby_kick dall'Host:", msg.reason || "");
+    showInGameNotice("Sei stato rimosso dalla stanza dall'Host.", 6000);
+    stopP2PHandshakeTimer();
+    clearGuestJoinTimeout();
+    if (typeof netStopPings === "function") netStopPings();
+    if (typeof netUpdateBadge === "function") netUpdateBadge();
+    closeP2PLink();
+    netplayConnected = false;
+    window.netplayConnected = false;
+    consecutiveWaitTicks = 0;
+    if (modeSelect) modeSelect.disabled = false;
+    modeBadge.className = "badge";
+    if (activeNetplayBanner) activeNetplayBanner.style.display = "none";
+    resetNetplayUi();
+    hideCanvasOverlay();
+    document.body.classList.remove("in-netplay");
+    startSinglePlayer(window.localSram);
   } else if (msg.type === "lobby_welcome") {
     myPlayerId = msg.assigned_slot;
     console.log(`[WebRTC Guest] Assegnato slot P${myPlayerId}`);
@@ -2364,6 +2509,7 @@ function handleGuestHostDisconnect(err) {
   clearGuestJoinTimeout();
   if (typeof netStopPings === "function") netStopPings();
   if (typeof netUpdateBadge === "function") netUpdateBadge();
+  document.body.classList.remove("in-netplay");
   if (!netplayConnected) {
     joinStatusNotice.innerHTML = `<span style='color:#f87171'>Connessione chiusa dall'Host o fallita.</span>`;
     btnJoinExistingRoom.style.display = "block";
@@ -2387,6 +2533,7 @@ function handleP2PDisconnect() {
   clearGuestJoinTimeout();
   if (typeof netStopPings === "function") netStopPings();
   if (typeof netUpdateBadge === "function") netUpdateBadge();
+  document.body.classList.remove("in-netplay");
   if (isRecoveringSession) return;
   netplayConnected = false;
   window.netplayConnected = false;
@@ -2449,7 +2596,13 @@ btnReset.addEventListener("click", () => {
 const btnLoadRom = document.getElementById("btnLoadRom");
 const inputRomFile = document.getElementById("inputRomFile");
 if (btnLoadRom && inputRomFile) {
-  btnLoadRom.addEventListener("click", () => inputRomFile.click());
+  btnLoadRom.addEventListener("click", () => {
+    if (document.body.classList.contains("in-netplay") || netplayConnected) {
+      showInGameNotice("[AVVISO] Non e possibile cambiare ROM durante una sessione Netplay attiva.", 4000);
+      return;
+    }
+    inputRomFile.click();
+  });
   inputRomFile.addEventListener("change", (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -2740,11 +2893,10 @@ function recoverSessionToSinglePlayer() {
   consecutiveWaitTicks = 0;
   activeNetplayBanner.style.display = "none";
 
-  // 3. Reset canvas and screen view back to single player (720x480)
+  // 3. Reset canvas and screen view back to single player
   canvas.width = GBA_WIDTH;
   canvas.height = GBA_HEIGHT;
-  canvas.style.width = "720px";
-  canvas.style.height = "480px";
+  updateCanvasAspectRatio("solo");
   netplayViewMode = "solo";
   setScreenView("solo");
 
@@ -3159,18 +3311,110 @@ function closeP2PLink() {
 }
 
 function resetNetplayUi() {
+  for (const slot of [2, 3, 4]) {
+    const g = connectedGuests[slot];
+    if (g && g.watchdogTimer) {
+      clearTimeout(g.watchdogTimer);
+      g.watchdogTimer = null;
+    }
+  }
   btnStartHosting.style.display = "block";
+  btnStartHosting.disabled = false;
   hostWaitingArea.style.display = "none";
   btnJoinExistingRoom.style.display = "block";
+  btnJoinExistingRoom.disabled = false;
   joinStatusArea.style.display = "none";
   connectedGuests = {};
   connectedPlayerIds = new Set([1]);
+  document.body.classList.remove("in-netplay");
   updateHostLobbyUI();
 }
+
+function cancelHosting() {
+  console.log("[Host] Annullamento stanza in corso...");
+  for (const s of [2, 3, 4]) {
+    const g = connectedGuests[s];
+    if (g) {
+      if (g.watchdogTimer) {
+        clearTimeout(g.watchdogTimer);
+        g.watchdogTimer = null;
+      }
+      if (g.conn) {
+        try { g.conn.close(); } catch (e) {}
+      }
+    }
+  }
+  connectedGuests = {};
+  connectedPlayerIds = new Set([1]);
+
+  if (peer) {
+    try { peer.destroy(); } catch (e) {}
+    peer = null;
+  }
+  if (typeof RebitMqtt !== "undefined" && typeof RebitMqtt.hostStop === "function") {
+    try { RebitMqtt.hostStop(); } catch (e) {}
+  }
+  if (activeP2PConn) {
+    try { activeP2PConn.close(); } catch (e) {}
+    activeP2PConn = null;
+  }
+
+  stopP2PHandshakeTimer();
+  clearTimeout(netGoTimer);
+  currentRoomCode = null;
+  hostMqttNote = "";
+  hostStatusBase = "";
+
+  if (hostWaitingArea) hostWaitingArea.style.display = "none";
+  if (btnStartHosting) {
+    btnStartHosting.style.display = "block";
+    btnStartHosting.disabled = false;
+  }
+  if (btnHostStartGame) {
+    btnHostStartGame.disabled = true;
+    btnHostStartGame.innerText = "[▶] In attesa dei compagni (minimo 2)...";
+    btnHostStartGame.style.background = "#374151";
+    btnHostStartGame.style.borderColor = "#4b5563";
+    btnHostStartGame.style.cursor = "not-allowed";
+  }
+
+  document.body.classList.remove("in-netplay");
+  updateHostLobbyUI();
+  showInGameNotice("[HOST] Stanza annullata con successo.", 3000);
+}
+window.cancelHosting = cancelHosting;
 
 // Connessione in arrivo da un guest, da WebRTC (PeerJS) oppure dal relay MQTT: stessa interfaccia, stessa logica.
 function onHostIncomingConn(conn) {
   console.log(`[Host] Compagno collegato via ${conn.type === "mqtt" ? "relay MQTT" : "WebRTC"}! Apertura canale di gioco...`);
+  const incomingToken = conn.clientSessionToken || (conn.metadata && conn.metadata.session_token) || null;
+
+  // 1. Deduplicazione: non occupare un nuovo slot se appartiene a un guest gia presente o pendente
+  let targetSlot = null;
+  if (incomingToken) {
+    targetSlot = [2, 3, 4].find((s) => connectedGuests[s] && connectedGuests[s].clientSessionToken === incomingToken);
+  }
+  if (!targetSlot && conn.peer) {
+    targetSlot = [2, 3, 4].find((s) => connectedGuests[s] && connectedGuests[s].conn && connectedGuests[s].conn.peer === conn.peer);
+  }
+
+  if (targetSlot) {
+    console.log(`[Host] Riconnessione/Fallback rilevato per Giocatore ${targetSlot} (token: ${incomingToken || "peer"}). Riassegno lo slot ${targetSlot} senza incrementare i giocatori.`);
+    const oldGuest = connectedGuests[targetSlot];
+    if (oldGuest) {
+      if (oldGuest.watchdogTimer) {
+        clearTimeout(oldGuest.watchdogTimer);
+        oldGuest.watchdogTimer = null;
+      }
+      if (oldGuest.conn && oldGuest.conn !== conn) {
+        try { oldGuest.conn.close(); } catch (e) {}
+      }
+    }
+    setupHostGuestConnection(conn, targetSlot, incomingToken);
+    return;
+  }
+
+  // 2. Nuovo guest: trova uno slot libero
   const freeSlot = [2, 3, 4].find((s) => !connectedGuests[s]);
   if (!freeSlot) {
     console.warn("[Host] Stanza piena (4/4)! Rifiuto nuova connessione.");
@@ -3180,7 +3424,7 @@ function onHostIncomingConn(conn) {
     });
     return;
   }
-  setupHostGuestConnection(conn, freeSlot);
+  setupHostGuestConnection(conn, freeSlot, incomingToken);
 }
 function renderHostStatus() {
   hostStatusNotice.innerText = hostStatusBase + (hostMqttNote ? "\n" + hostMqttNote : "");
@@ -3212,6 +3456,7 @@ btnStartHosting.addEventListener("click", () => {
 
   btnStartHosting.style.display = "none";
   hostWaitingArea.style.display = "block";
+  document.body.classList.add("in-netplay");
   if (generatedRoomCode) generatedRoomCode.innerText = currentRoomCode;
   hostStatusBase = "Registrazione stanza online in corso..."; hostMqttNote = "";
   if (typeof RebitMqtt !== "undefined") RebitMqtt.closeAll();
@@ -3256,12 +3501,14 @@ btnStartHosting.addEventListener("click", () => {
         showInGameNotice("[AVVISO] Codice stanza gia in uso. Ritento...", 2000);
         setTimeout(() => { if (!netplayConnected) btnStartHosting.click(); }, 500);
       } else {
+        document.body.classList.remove("in-netplay");
         hostStatusNotice.innerHTML = `<span style='color:#f87171'>Errore broker: ${err.type || err}</span>`;
       }
     });
   } catch (err) {
     console.warn("PeerJS init error:", err);
     btnStartHosting.style.display = "block";
+    document.body.classList.remove("in-netplay");
   }
 });
 
@@ -3355,8 +3602,12 @@ btnJoinExistingRoom.addEventListener("click", () => {
   const targetPeerId = `rebit-gba-${normalizedNum}`;
   const displayCode = `GBA-${normalizedNum.toUpperCase()}`;
 
+  const clientSessionToken = "gst_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+  window.clientSessionToken = clientSessionToken;
+
   btnJoinExistingRoom.style.display = "none";
   joinStatusArea.style.display = "block";
+  document.body.classList.add("in-netplay");
   joinStatusNotice.innerText = `Ricerca stanza [${displayCode}] sul broker P2P...`;
 
   closeP2PLink();
@@ -3373,16 +3624,18 @@ btnJoinExistingRoom.addEventListener("click", () => {
     RebitMqtt.guestJoin(displayCode, (st) => {
       if (st.phase === "connecting") joinStatusNotice.innerText = `Relay MQTT: collegamento a ${st.brokers} broker...`;
       else if (st.phase === "connected") joinStatusNotice.innerText = "Relay MQTT: broker raggiunto, cerco l'Host...";
-    }, 22000).then((mconn) => {
+    }, 22000, clientSessionToken).then((mconn) => {
       if (netplayConnected || (activeP2PConn && activeP2PConn.open && activeP2PConn.type !== "mqtt")) { try { mconn.close(); } catch (e) {} return; }
       try { if (activeP2PConn && activeP2PConn !== mconn) activeP2PConn.close(); } catch (e) {}
       if (peer) { try { peer.destroy(); } catch (e) {} peer = null; }
       joinStatusNotice.innerText = "Relay MQTT collegato! In attesa assegnazione slot...";
-      setupGuestConnection(mconn);
+      mconn.clientSessionToken = clientSessionToken;
+      setupGuestConnection(mconn, clientSessionToken);
     }).catch((e) => {
       if (!e || e.message === "annullato") return;
       clearGuestJoinTimeout(); stopP2PHandshakeTimer();
       btnJoinExistingRoom.style.display = "block";
+      document.body.classList.remove("in-netplay");
       joinStatusNotice.innerHTML = `<span style='color:#f87171'>Ne' WebRTC ne' relay MQTT hanno raggiunto l'Host [${displayCode}]: ${(e && e.message) || e}.<br>Controlla il codice e che l'Host abbia creato la stanza.</span>`;
     });
     return true;
@@ -3394,6 +3647,7 @@ btnJoinExistingRoom.addEventListener("click", () => {
       console.warn("[WebRTC Guest] Timeout di 20s raggiunto.");
       joinStatusNotice.innerHTML = `<span style='color:#f87171'>Timeout: l'Host [${displayCode}] non risponde.<br>Assicurati che l'Host abbia premuto "Crea Stanza" e sia online.</span>`;
       btnJoinExistingRoom.style.display = "block";
+      document.body.classList.remove("in-netplay");
       stopP2PHandshakeTimer();
     }
   }, 32000);
@@ -3408,8 +3662,12 @@ btnJoinExistingRoom.addEventListener("click", () => {
     peer.on("open", (myGuestId) => {
       console.log("[WebRTC Guest] Connessione a Host:", targetPeerId);
       joinStatusNotice.innerText = `Host trovato! Negoziazione canale diretto P2P con [${displayCode}]...`;
-      const conn = peer.connect(targetPeerId, { reliable: true });
-      setupGuestConnection(conn);
+      const conn = peer.connect(targetPeerId, {
+        reliable: true,
+        metadata: { session_token: clientSessionToken }
+      });
+      conn.clientSessionToken = clientSessionToken;
+      setupGuestConnection(conn, clientSessionToken);
     });
 
     peer.on("error", (err) => {
@@ -3418,6 +3676,7 @@ btnJoinExistingRoom.addEventListener("click", () => {
       clearGuestJoinTimeout();
       stopP2PHandshakeTimer();
       btnJoinExistingRoom.style.display = "block";
+      document.body.classList.remove("in-netplay");
       if (err.type === "peer-unavailable") {
         joinStatusNotice.innerHTML = `<span style='color:#f87171'>Stanza [${displayCode}] non trovata!<br>Assicurati che l'Host abbia premuto "Crea Stanza" e che il codice sia corretto.</span>`;
       } else {
@@ -3427,6 +3686,7 @@ btnJoinExistingRoom.addEventListener("click", () => {
   } catch (err) {
     console.error("PeerJS guest error:", err);
     btnJoinExistingRoom.style.display = "block";
+    document.body.classList.remove("in-netplay");
     joinStatusNotice.innerHTML = `<span style='color:#f87171'>Inizializzazione fallita: ${err.message || err}</span>`;
   }
 });
@@ -3445,11 +3705,16 @@ btnDisconnectNetplay.addEventListener("click", () => {
   activeNetplayBanner.style.display = "none";
   resetNetplayUi();
   hideCanvasOverlay();
+  document.body.classList.remove("in-netplay");
   showInGameNotice("[INFO] Disconnesso dal Cavo Link P2P. Ritorno alla modalita singolo.", 4000);
   startSinglePlayer(window.localSram);
 });
 
 modeSelect.addEventListener("change", (e) => {
+  if (document.body.classList.contains("in-netplay") || netplayConnected) {
+    showInGameNotice("[AVVISO] Modalita bloccata durante una sessione Netplay.", 4000);
+    return;
+  }
   if (e.target.value === "dual") {
     startDualScreenCoop();
   } else {
@@ -3468,8 +3733,7 @@ function setScreenView(view) {
   if (view === "split") {
     canvas.width = GBA_WIDTH * 2;
     canvas.height = GBA_HEIGHT;
-    canvas.style.width = "960px";
-    canvas.style.height = "320px";
+    updateCanvasAspectRatio("split");
     if (btnToggleScreenView) {
       btnToggleScreenView.innerText = "[O] Vista: Split (2P)";
       btnToggleScreenView.style.display = currentMode === "solo" ? "none" : "inline-flex";
@@ -3477,8 +3741,7 @@ function setScreenView(view) {
   } else if (view === "grid") {
     canvas.width = GBA_WIDTH * 2;
     canvas.height = GBA_HEIGHT * 2;
-    canvas.style.width = "720px";
-    canvas.style.height = "480px";
+    updateCanvasAspectRatio("grid");
     if (btnToggleScreenView) {
       btnToggleScreenView.innerText = "[O] Vista: Griglia (4P)";
       btnToggleScreenView.style.display = currentMode === "solo" ? "none" : "inline-flex";
@@ -3486,8 +3749,7 @@ function setScreenView(view) {
   } else {
     canvas.width = GBA_WIDTH;
     canvas.height = GBA_HEIGHT;
-    canvas.style.width = "720px";
-    canvas.style.height = "480px";
+    updateCanvasAspectRatio("solo");
     if (btnToggleScreenView) {
       btnToggleScreenView.innerText = "[O] Vista: Singolo";
       btnToggleScreenView.style.display = currentMode === "solo" ? "none" : "inline-flex";
@@ -3612,6 +3874,217 @@ window.gbaDebug = {
   getConnectedGuests: () => connectedGuests,
   getConnectedPlayerIds: () => Array.from(connectedPlayerIds),
   getCurrentKeys: () => currentKeys,
+  kickPlayer: (slot) => kickPlayer(slot),
+  cancelHosting: () => cancelHosting(),
+  toggleFullscreen: () => toggleFullscreen(),
+  exitFullscreen: () => exitFullscreen()
 };
+
+// -------------------------------------------------------------
+// Fullscreen, Drawer & Contextual Controls (Ponytail Ultra)
+// -------------------------------------------------------------
+function toggleFullscreen() {
+  const el = document.getElementById("screenWrapper") || canvas;
+  const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
+  if (!isFs) {
+    if (el && el.requestFullscreen) {
+      el.requestFullscreen().catch(() => {
+        document.body.classList.toggle("is-fullscreen");
+      });
+    } else if (el && el.webkitRequestFullscreen) {
+      el.webkitRequestFullscreen();
+    } else if (el && el.webkitEnterFullscreen) {
+      el.webkitEnterFullscreen();
+    } else if (el && el.mozRequestFullScreen) {
+      el.mozRequestFullScreen();
+    } else if (el && el.msRequestFullscreen) {
+      el.msRequestFullscreen();
+    } else {
+      document.body.classList.toggle("is-fullscreen");
+    }
+  } else {
+    exitFullscreen();
+  }
+}
+
+function exitFullscreen() {
+  if (document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement) {
+    if (document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
+    } else if (document.webkitExitFullscreen) {
+      document.webkitExitFullscreen();
+    } else if (document.mozCancelFullScreen) {
+      document.mozCancelFullScreen();
+    } else if (document.msExitFullscreen) {
+      document.msExitFullscreen();
+    }
+  }
+  document.body.classList.remove("is-fullscreen");
+}
+
+function handleFullscreenChange() {
+  const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
+  if (isFs) {
+    document.body.classList.add("is-fullscreen");
+  } else {
+    document.body.classList.remove("is-fullscreen");
+  }
+}
+document.addEventListener("fullscreenchange", handleFullscreenChange);
+document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+document.addEventListener("mozfullscreenchange", handleFullscreenChange);
+document.addEventListener("MSFullscreenChange", handleFullscreenChange);
+
+window.toggleFullscreen = toggleFullscreen;
+window.exitFullscreen = exitFullscreen;
+
+function openSettingsDrawer() {
+  const drawer = document.getElementById("settingsDrawer");
+  if (!drawer) return;
+  drawer.style.display = "flex";
+  drawer.classList.add("open");
+  drawer.classList.add("is-open");
+  drawer.setAttribute("aria-hidden", "false");
+  const backdrop = document.getElementById("settingsDrawerBackdrop");
+  if (backdrop) {
+    backdrop.style.display = "block";
+    backdrop.style.opacity = "1";
+  }
+}
+
+function closeSettingsDrawer() {
+  const drawer = document.getElementById("settingsDrawer");
+  if (!drawer) return;
+  drawer.classList.remove("open");
+  drawer.classList.remove("is-open");
+  drawer.setAttribute("aria-hidden", "true");
+  drawer.style.display = "none";
+  const backdrop = document.getElementById("settingsDrawerBackdrop");
+  if (backdrop) {
+    backdrop.style.display = "none";
+    backdrop.style.opacity = "0";
+  }
+}
+
+function toggleSettingsDrawer() {
+  const drawer = document.getElementById("settingsDrawer");
+  if (!drawer) return;
+  if (drawer.classList.contains("open") || drawer.classList.contains("is-open")) {
+    closeSettingsDrawer();
+  } else {
+    openSettingsDrawer();
+  }
+}
+
+window.openSettingsDrawer = openSettingsDrawer;
+window.closeSettingsDrawer = closeSettingsDrawer;
+window.toggleSettingsDrawer = toggleSettingsDrawer;
+
+// Touch Controls synchronization
+function updateTouchEnabledClass() {
+  const chk = document.getElementById("chkTouchControls");
+  if (chk) {
+    if (chk.checked) {
+      document.body.classList.add("touch-enabled");
+    } else {
+      document.body.classList.remove("touch-enabled");
+    }
+  }
+}
+document.addEventListener("change", (e) => {
+  if (e.target && e.target.id === "chkTouchControls") {
+    updateTouchEnabledClass();
+  }
+});
+window.addEventListener("DOMContentLoaded", updateTouchEnabledClass);
+setTimeout(updateTouchEnabledClass, 100);
+setTimeout(updateTouchEnabledClass, 500);
+
+// Global delegation for UI actions (Fullscreen, Settings, Kick, Cancel)
+document.addEventListener("click", (e) => {
+  if (!e.target) return;
+  // Fullscreen toggle
+  if (e.target.id === "btnFullscreenToggle" || e.target.closest("#btnFullscreenToggle")) {
+    e.preventDefault();
+    toggleFullscreen();
+    return;
+  }
+  // Exit fullscreen from HUD
+  if (e.target.id === "btnExitFullscreenHud" || e.target.closest("#btnExitFullscreenHud") ||
+      e.target.id === "btnHudFullscreenExit" || e.target.closest("#btnHudFullscreenExit")) {
+    e.preventDefault();
+    exitFullscreen();
+    return;
+  }
+  // Settings drawer
+  if (e.target.id === "btnOpenSettings" || e.target.closest("#btnOpenSettings")) {
+    e.preventDefault();
+    openSettingsDrawer();
+    return;
+  }
+  if (e.target.id === "btnCloseSettings" || e.target.closest("#btnCloseSettings")) {
+    e.preventDefault();
+    closeSettingsDrawer();
+    return;
+  }
+  if (e.target.id === "btnHudSettings" || e.target.closest("#btnHudSettings")) {
+    e.preventDefault();
+    toggleSettingsDrawer();
+    return;
+  }
+  // Cancel hosting
+  if (e.target.id === "btnCancelHosting" || e.target.closest("#btnCancelHosting")) {
+    e.preventDefault();
+    cancelHosting();
+    return;
+  }
+  // Host kick slot buttons
+  const kickBtn = e.target.closest("#btnHostKickSlot2, #btnHostKickSlot3, #btnHostKickSlot4, [id^='btnHostKickSlot']");
+  if (kickBtn) {
+    e.preventDefault();
+    const match = kickBtn.id.match(/btnHostKickSlot(\d+)/);
+    if (match) {
+      const slot = parseInt(match[1], 10);
+      kickPlayer(slot);
+    }
+    return;
+  }
+});
+
+// Explicit element binding when available
+for (const s of [2, 3, 4]) {
+  const kickBtn = document.getElementById(`btnHostKickSlot${s}`);
+  if (kickBtn) {
+    kickBtn.addEventListener("click", () => kickPlayer(s));
+  }
+}
+const btnCancelHostingEl = document.getElementById("btnCancelHosting");
+if (btnCancelHostingEl) {
+  btnCancelHostingEl.addEventListener("click", cancelHosting);
+}
+const btnFsToggleEl = document.getElementById("btnFullscreenToggle");
+if (btnFsToggleEl) {
+  btnFsToggleEl.addEventListener("click", toggleFullscreen);
+}
+const btnExitFs1 = document.getElementById("btnExitFullscreenHud");
+if (btnExitFs1) {
+  btnExitFs1.addEventListener("click", exitFullscreen);
+}
+const btnExitFs2 = document.getElementById("btnHudFullscreenExit");
+if (btnExitFs2) {
+  btnExitFs2.addEventListener("click", exitFullscreen);
+}
+const btnOpenSettingsEl = document.getElementById("btnOpenSettings");
+if (btnOpenSettingsEl) {
+  btnOpenSettingsEl.addEventListener("click", openSettingsDrawer);
+}
+const btnCloseSettingsEl = document.getElementById("btnCloseSettings");
+if (btnCloseSettingsEl) {
+  btnCloseSettingsEl.addEventListener("click", closeSettingsDrawer);
+}
+const btnHudSettingsEl = document.getElementById("btnHudSettings");
+if (btnHudSettingsEl) {
+  btnHudSettingsEl.addEventListener("click", toggleSettingsDrawer);
+}
 
 window.addEventListener("load", initCore);
