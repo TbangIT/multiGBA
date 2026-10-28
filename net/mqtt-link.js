@@ -134,9 +134,19 @@ const RebitMqtt = (() => {
     const onFrame = (kind, from, payload, topic) => {
       let conn = ctl.conns.get(from);
       if (kind === K.JOIN) {
+        let meta = null;
+        if (payload && payload.length > 0) {
+          try { meta = C.fromJson(payload); } catch (_) {}
+        }
+        const token = (meta && (meta.session_token || meta.token)) || (typeof meta === "string" ? meta : null);
         if (!conn || !conn.open) {
           conn = new MqttConn(ctl.session, base + "/g/" + from, from, base + "/in");
+          if (meta) conn.metadata = meta;
+          if (token) conn.clientSessionToken = token;
           ctl.conns.set(from, conn); conn._open(); onIncoming(conn);
+        } else if (token && !conn.clientSessionToken) {
+          if (meta) conn.metadata = meta;
+          conn.clientSessionToken = token;
         }
         ctl.session.send(base + "/g/" + from, K.WELCOME, EMPTY, 0);
       } else if (conn) conn._in(kind, payload, topic === base + "/in");
@@ -155,10 +165,12 @@ const RebitMqtt = (() => {
   }
 
   // ---- GUEST: si collega a tutti i broker, JOIN ripetuto; il primo WELCOME sceglie il broker. Ritorna una promise con .cancel() ----
-  function guestJoin(roomCode, onStatus, timeoutMs) {
+  function guestJoin(roomCode, onStatus, timeoutMs, meta) {
     guestStop();
     const ctl = guestCtl = { cands: [], done: false, conn: null };
     const say = (s) => { if (onStatus && !ctl.done) onStatus(s); };
+    const sessionToken = (meta && typeof meta === "object") ? (meta.session_token || meta.token) : (typeof meta === "string" ? meta : null);
+    const joinPayload = meta ? (typeof meta === "object" ? C.toJson(meta) : C.toJson({ session_token: meta })) : EMPTY;
     const promise = new Promise(async (resolve, reject) => {
       let timer = null, joinTimer = null;
       const finish = (err, conn) => {
@@ -171,7 +183,7 @@ const RebitMqtt = (() => {
         const inbox = base + "/g/" + me;
         timer = setTimeout(() => finish(new Error("nessuna risposta dall'host via MQTT")), timeoutMs || 15000);
         let welcomed = false;
-        const sendJoin = () => { if (!welcomed) for (const s of ctl.cands) if (s.client && s.client.connected) s.send(base + "/h", K.JOIN, EMPTY, 0); };
+        const sendJoin = () => { if (!welcomed) for (const s of ctl.cands) if (s.client && s.client.connected) s.send(base + "/h", K.JOIN, joinPayload, 0); };
         joinTimer = setInterval(sendJoin, JOIN_EVERY_MS);
         say({ phase: "connecting", brokers: urls.length });
         let failures = 0;
@@ -184,7 +196,10 @@ const RebitMqtt = (() => {
               if (!ctl.conn) {   // primo WELCOME: questo e' il broker della stanza
                 ctl.cands.filter((x) => x !== s).forEach((x) => x.close());
                 ctl.cands = [s];
-                const conn = ctl.conn = new MqttConn(s, base + "/h", from, base + "/in"); conn._open();
+                const conn = ctl.conn = new MqttConn(s, base + "/h", from, base + "/in");
+                if (meta) conn.metadata = typeof meta === "object" ? meta : { session_token: meta };
+                if (sessionToken) conn.clientSessionToken = sessionToken;
+                conn._open();
                 s.onState = (st) => { if (st.state === "failover") say({ phase: "failover" }); };
                 s.onReconnected = () => { welcomed = false; sendJoin(); };   // sul nuovo broker l'host deve rivederci
                 finish(null, conn);
