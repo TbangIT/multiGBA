@@ -11,22 +11,74 @@
 </head>
 <body>
   <header>
-    <div class="logo-area">
-      <div class="logo-badge">P2P WEBRTC</div>
-      <h1>mGBA Online Netplay</h1>
+    <div class="header-left">
+      <div class="logo-area">
+        <div class="logo-badge">P2P WEBRTC</div>
+        <h1>mGBA Online Netplay</h1>
+      </div>
+      <div class="status-bar">
+        <div class="badge" id="romBadge">ROM: Inizializzazione...</div>
+        <div class="badge" id="saveBadge" style="display:none">Salvataggio: Nessuno</div>
+        <div class="badge" id="modeBadge">Modalita: Singolo (P1)</div>
+        <div class="badge active" id="fpsBadge"><span class="indicator"></span> 0 FPS</div>
+        <div class="badge" id="speedBadge" style="display:none">Velocita: 1x (60 FPS)</div>
+        <div class="badge" id="netBadge" style="display:none" title="Ping reale e anticipo input (frame)">Ping ...</div>
+      </div>
     </div>
-    <div class="status-bar">
-      <div class="badge" id="romBadge">ROM: Inizializzazione...</div>
-      <div class="badge" id="saveBadge">Salvataggio: Nessuno</div>
-      <div class="badge" id="modeBadge">Modalita: Singolo (P1)</div>
-      <div class="badge active" id="fpsBadge"><span class="indicator"></span> 0 FPS</div>
-      <div class="badge" id="speedBadge">Velocita: 1x (60 FPS)</div>
-      <div class="badge" id="netBadge" style="display:none" title="Ping reale e anticipo input (frame)">Ping ...</div>
+
+    <div class="header-right">
+      <!-- Quick ROM Loader -->
+      <input type="file" id="inputRomFile" accept=".gba" style="display: none;">
+      <button class="btn-header" id="btnLoadRom" title="Carica una ROM Game Boy Advance (.gba)">
+        [ROM] Carica .gba
+      </button>
+
+      <!-- Quick Play/Pause -->
+      <button class="btn-header btn-primary" id="btnPlayPause" title="Metti in pausa o riprendi l'emulazione">
+        [▶/||] Pausa
+      </button>
+
+      <!-- Quick Audio Toggle -->
+      <button class="btn-header" id="btnAudioToggle" title="Attiva/Disattiva audio">
+        [Audio]
+      </button>
+
+      <!-- Fullscreen Toggle -->
+      <button class="btn-header" id="btnFullscreenToggle" title="Attiva Schermo Intero (Fullscreen)">
+        [⛶ Fullscreen]
+      </button>
+
+      <!-- Touch Controls Toggle -->
+      <label class="toggle-control btn-header-touch" id="lblTouchControlsToggle" title="Mostra/Nascondi Controlli Touch a schermo">
+        <input type="checkbox" id="chkTouchControls">
+        <span>[📱 Touch]</span>
+      </label>
+
+      <!-- Online Netplay Link Cable Trigger -->
+      <button class="btn-header highlight btn-netplay" id="btnOpenNetplayModal" title="Apri Cavo Link P2P Multiplayer">
+        [ONLINE] Cavo Link P2P
+      </button>
+
+      <!-- Open Settings Drawer -->
+      <button class="btn-header btn-settings" id="btnOpenSettings" title="Apri Impostazioni ed Opzioni">
+        [⚙ Impostazioni]
+      </button>
     </div>
   </header>
 
   <main>
     <div class="screen-container" id="screenWrapper">
+      <!-- Floating Game HUD (A comparsa in Fullscreen su hover o tocco) -->
+      <div id="floatingGameHud" class="floating-game-hud" style="display: none;">
+        <button id="btnHudFullscreenExit" class="hud-btn" title="Esci da Schermo Intero">[⛶ Esci Fullscreen]</button>
+        <button id="btnExitFullscreenHud" class="hud-btn" style="display: none;" aria-hidden="true">[⛶ Esci Fullscreen]</button>
+        <label class="toggle-control hud-toggle" id="lblHudTouchToggle" title="Attiva/Disattiva Controlli Touch">
+          <input type="checkbox" id="chkHudTouchToggle">
+          <span>[📱 Touch]</span>
+        </label>
+        <button id="btnHudSettings" class="hud-btn" title="Apri Impostazioni">[⚙ Impostazioni]</button>
+      </div>
+
       <!-- In-Game floating notification banner with dismiss button -->
       <div id="gameNotification" class="game-notification" style="display: none;">
         <span id="gameNotificationText"></span>
@@ -34,7 +86,7 @@
       </div>
 
       <!-- GBA Canvas: 240x160 native, scaled pixel-perfect -->
-      <canvas id="screenCanvas" width="240" height="160" style="width: 720px; height: 480px;"></canvas>
+      <canvas id="screenCanvas" width="240" height="160"></canvas>
 
       <!-- Canvas status & pause overlay (Background pause / Desync wait) -->
       <div class="canvas-overlay" id="canvasOverlay" style="display: none;">
@@ -58,68 +110,6 @@
       </div>
     </div>
 
-    <!-- Controls Panel -->
-    <div class="controls-panel">
-      <button class="primary" id="btnPlayPause">[||] Pausa</button>
-      <button class="highlight" id="btnSpeedToggle">[&gt;&gt;] Velocita: 1x</button>
-      <button id="btnAudioToggle">[Audio] Attivo</button>
-      <button id="btnReset">[&lt;&gt;] Riavvia</button>
-
-      <div style="height: 24px; width: 1px; background: #3f3f46; margin: 0 4px;"></div>
-
-      <!-- ROM Loader -->
-      <input type="file" id="inputRomFile" accept=".gba" style="display: none;">
-      <button id="btnLoadRom">[ROM] Carica .gba</button>
-
-      <!-- Save Management -->
-      <input type="file" id="inputSaveFile" accept=".sav" style="display: none;">
-      <button id="btnImportSave">[+] Carica .sav</button>
-      <button id="btnExportSave">[-] Scarica .sav</button>
-      <button id="btnSaveBrowserNow" style="background: #065f46; border-color: #10b981;" title="Salva istantaneamente lo stato nel browser (pronto anche dopo un refresh)">
-        [💾 Salva nel Browser]
-      </button>
-      <button id="btnOpenSavestateModal" style="background: #312e81; border-color: #6366f1;">
-        [#] Savestate di Emergenza
-      </button>
-      <button id="btnOpenKeybindsModal" style="background: #1e293b; border-color: #475569;">
-        [K] Comandi Tastiera
-      </button>
-
-      <div style="height: 24px; width: 1px; background: #3f3f46; margin: 0 4px;"></div>
-
-      <!-- Online Netplay Link Cable Trigger -->
-      <button class="highlight" id="btnOpenNetplayModal" style="background: linear-gradient(135deg, #4f46e5, #7c3aed); border-color: #8b5cf6;">
-        [ONLINE] Cavo Link P2P
-      </button>
-
-      <!-- Mode selector (Local) -->
-      <select class="mode-select" id="modeSelect">
-        <option value="solo">Schermo Singolo (P1)</option>
-        <option value="dual">Dual Split-Screen (P1 + P2)</option>
-      </select>
-
-      <button id="btnToggleScreenView">[O] Vista: Singolo</button>
-
-      <div style="height: 24px; width: 1px; background: #3f3f46; margin: 0 4px;"></div>
-
-      <!-- Touch Controls Toggle & Edit Button -->
-      <label class="toggle-control" id="lblTouchControlsToggle" title="Mostra/Nascondi i controlli touch a schermo (utile per smartphone e tablet)">
-        <input type="checkbox" id="chkTouchControls">
-        <span>[T] Controlli Touch</span>
-      </label>
-      <button id="btnEditTouchLayout" class="btn-touch-edit" style="font-size: 12px; padding: 5px 10px; background: #4f46e5; border: 1px solid #818cf8; color: #fff; font-weight: bold; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;" title="Modifica la posizione e la dimensione di ogni tasto">
-        [✥ Sposta/Personalizza Layout]
-      </button>
-
-      <div style="height: 24px; width: 1px; background: #3f3f46; margin: 0 4px;"></div>
-
-      <!-- Debug Toggle: Pause on Background -->
-      <label class="toggle-control" id="lblPauseOnBackground" title="Pausa la simulazione quando la finestra perde il focus (utile per debug)">
-        <input type="checkbox" id="chkPauseOnBackground">
-        <span>[||] Pausa se in background (Debug)</span>
-      </label>
-    </div>
-
     <!-- Keybindings Guide -->
     <div class="keybindings-info">
       <div style="font-weight: 600; color: #f4f4f5; margin-bottom: 4px;">Comandi Tastiera GBA (Layout Rebit):</div>
@@ -134,6 +124,84 @@
       </div>
     </div>
   </main>
+
+  <!-- Settings Drawer Backdrop -->
+  <div class="settings-drawer-backdrop" id="settingsDrawerBackdrop" style="display: none;"></div>
+
+  <!-- Settings Drawer Flyout Panel -->
+  <aside class="settings-drawer" id="settingsDrawer" aria-label="Pannello Impostazioni" style="display: none;">
+    <div class="settings-drawer-header">
+      <div class="settings-drawer-title">
+        <span>⚙</span>
+        <h2>Impostazioni &amp; Opzioni</h2>
+      </div>
+      <button class="settings-drawer-close" id="btnCloseSettings" title="Chiudi impostazioni">[✕]</button>
+    </div>
+
+    <div class="settings-drawer-content">
+      <!-- Sezione Salvataggi -->
+      <section class="settings-section">
+        <h3 class="settings-section-title">💾 Salvataggi &amp; Memoria</h3>
+        <div class="settings-section-grid">
+          <button id="btnSaveBrowserNow" class="btn-drawer btn-save-browser" title="Salva istantaneamente lo stato nel browser (pronto anche dopo un refresh)">
+            [💾 Salva nel Browser]
+          </button>
+          <input type="file" id="inputSaveFile" accept=".sav" style="display: none;">
+          <div class="settings-btn-row">
+            <button id="btnImportSave" class="btn-drawer">[+] Carica .sav</button>
+            <button id="btnExportSave" class="btn-drawer">[-] Scarica .sav</button>
+          </div>
+          <button id="btnOpenSavestateModal" class="btn-drawer btn-savestate" title="Gestione savestate e backup di emergenza">
+            [#] Savestate di Emergenza
+          </button>
+        </div>
+      </section>
+
+      <!-- Sezione Controlli -->
+      <section class="settings-section">
+        <h3 class="settings-section-title">🎮 Controlli &amp; Layout</h3>
+        <div class="settings-section-grid">
+          <button id="btnOpenKeybindsModal" class="btn-drawer">
+            [⌨] Comandi Tastiera
+          </button>
+          <button id="btnEditTouchLayout" class="btn-drawer btn-touch-edit" style="display: none;" title="Modifica la posizione e la dimensione di ogni tasto touch">
+            [✥ Sposta/Personalizza Layout]
+          </button>
+        </div>
+      </section>
+
+      <!-- Sezione Emulatore -->
+      <section class="settings-section">
+        <h3 class="settings-section-title">⚡ Emulatore &amp; Visualizzazione</h3>
+        <div class="settings-section-grid">
+          <div class="settings-field">
+            <label for="btnSpeedToggle">Velocità Simulazione:</label>
+            <button class="btn-drawer highlight" id="btnSpeedToggle">[&gt;&gt;] Velocita: 1x</button>
+          </div>
+          <div class="settings-field">
+            <label for="modeSelect">Modalità Schermo (Locale):</label>
+            <select class="mode-select" id="modeSelect" style="width: 100%;">
+              <option value="solo">Schermo Singolo (P1)</option>
+              <option value="dual">Dual Split-Screen (P1 + P2)</option>
+            </select>
+          </div>
+          <button id="btnToggleScreenView" class="btn-drawer">[O] Vista: Singolo</button>
+          <button id="btnReset" class="btn-drawer btn-danger">[↺] Riavvia</button>
+        </div>
+      </section>
+
+      <!-- Sezione Avanzate / Debug -->
+      <section class="settings-section">
+        <h3 class="settings-section-title">🔧 Avanzate &amp; Debug</h3>
+        <div class="settings-section-grid">
+          <label class="toggle-control" id="lblPauseOnBackground" title="Pausa la simulazione quando la finestra perde il focus (utile per debug)">
+            <input type="checkbox" id="chkPauseOnBackground">
+            <span>[||] Pausa se in background (Debug)</span>
+          </label>
+        </div>
+      </section>
+    </div>
+  </aside>
 
   <!-- Touch Controls Overlay (Smartphones & Tablets) -->
   <div id="touchControlsOverlay" class="touch-overlay" style="display: none;">
@@ -288,6 +356,7 @@
           <div style="display: flex; gap: 8px; justify-content: center; margin-bottom: 12px; flex-wrap: wrap;">
             <button id="btnCopyRoomLink" style="font-size: 12px; padding: 8px 14px; background: #065f46; border-color: #10b981; font-weight: bold;">[Copia] Link Diretto (Invia ai compagni)</button>
             <button id="btnCopyRoomCode" style="font-size: 12px; padding: 8px 14px;">[Copia] Solo Codice</button>
+            <button id="btnCancelHosting" class="btn-cancel-host" title="Annulla la stanza e torna allo stato iniziale">[✕ Annulla Stanza]</button>
           </div>
           <div class="status-notice" id="hostStatusNotice">In attesa che i compagni entrino nella stanza...</div>
 
@@ -307,16 +376,19 @@
                 <span class="lobby-player-tag lobby-tag-p2">P2</span>
                 <span style="flex: 1; margin-left: 8px; color: #71717a;" id="hostSlot2Name">In attesa compagno...</span>
                 <span class="lobby-status-badge lobby-status-waiting" id="hostSlot2Status">In attesa</span>
+                <button id="btnHostKickSlot2" class="btn-kick-slot" title="Espelli giocatore P2" style="display: none;">[✕ Espelli]</button>
               </div>
               <div class="lobby-player-row empty" id="hostSlot3">
                 <span class="lobby-player-tag lobby-tag-p3">P3</span>
                 <span style="flex: 1; margin-left: 8px; color: #71717a;" id="hostSlot3Name">Disponibile (opzionale)</span>
                 <span class="lobby-status-badge lobby-status-waiting" id="hostSlot3Status">Disponibile</span>
+                <button id="btnHostKickSlot3" class="btn-kick-slot" title="Espelli giocatore P3" style="display: none;">[✕ Espelli]</button>
               </div>
               <div class="lobby-player-row empty" id="hostSlot4">
                 <span class="lobby-player-tag lobby-tag-p4">P4</span>
                 <span style="flex: 1; margin-left: 8px; color: #71717a;" id="hostSlot4Name">Disponibile (opzionale)</span>
                 <span class="lobby-status-badge lobby-status-waiting" id="hostSlot4Status">Disponibile</span>
+                <button id="btnHostKickSlot4" class="btn-kick-slot" title="Espelli giocatore P4" style="display: none;">[✕ Espelli]</button>
               </div>
             </div>
           </div>
@@ -477,5 +549,159 @@
   <script src="net/lockstep-timing.js?v=2.11"></script><!-- delay adattivo, ping/RTT, stalli, CPU -->
   <script src="net/perf-monitor.js?v=2.11"></script>   <!-- diagnostica: rete o CPU? (F3 pannello, F4 profilo lag) -->
   <script src="app.js?v=2.11"></script>
+
+  <!-- UI Interactions & State Controller (Fullscreen, Drawer, Floating HUD, Touch Sync) -->
+  <script>
+    (function() {
+      // Elements
+      const btnFullscreenToggle = document.getElementById("btnFullscreenToggle");
+      const btnHudFullscreenExit = document.getElementById("btnHudFullscreenExit");
+      const btnExitFullscreenHud = document.getElementById("btnExitFullscreenHud");
+      const btnOpenSettings = document.getElementById("btnOpenSettings");
+      const btnHudSettings = document.getElementById("btnHudSettings");
+      const btnCloseSettings = document.getElementById("btnCloseSettings");
+      const settingsDrawer = document.getElementById("settingsDrawer");
+      const settingsDrawerBackdrop = document.getElementById("settingsDrawerBackdrop");
+      const chkTouch = document.getElementById("chkTouchControls");
+      const chkHudTouch = document.getElementById("chkHudTouchToggle");
+      const floatingHud = document.getElementById("floatingGameHud");
+      const screenWrapper = document.getElementById("screenWrapper");
+
+      // Fullscreen handling
+      function toggleFullscreen() {
+        if (!document.fullscreenElement) {
+          const docEl = document.documentElement;
+          const req = docEl.requestFullscreen || docEl.webkitRequestFullscreen || docEl.mozRequestFullScreen || docEl.msRequestFullscreen;
+          if (req) {
+            req.call(docEl).catch(function(err) {
+              console.warn("Fullscreen error:", err);
+              document.body.classList.toggle("is-fullscreen");
+            });
+          } else {
+            document.body.classList.toggle("is-fullscreen");
+          }
+        } else {
+          const exit = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+          if (exit) {
+            exit.call(document).catch(function(err) {
+              console.warn("Fullscreen exit error:", err);
+              document.body.classList.remove("is-fullscreen");
+            });
+          } else {
+            document.body.classList.remove("is-fullscreen");
+          }
+        }
+      }
+
+      function updateFullscreenState() {
+        const isFs = !!document.fullscreenElement;
+        document.body.classList.toggle("is-fullscreen", isFs);
+        if (btnFullscreenToggle) {
+          btnFullscreenToggle.innerHTML = isFs ? '[🗗 Finestra]' : '[⛶ Fullscreen]';
+        }
+      }
+
+      document.addEventListener("fullscreenchange", updateFullscreenState);
+      document.addEventListener("webkitfullscreenchange", updateFullscreenState);
+      document.addEventListener("mozfullscreenchange", updateFullscreenState);
+      document.addEventListener("MSFullscreenChange", updateFullscreenState);
+
+      if (btnFullscreenToggle) {
+        btnFullscreenToggle.addEventListener("click", toggleFullscreen);
+      }
+      if (btnHudFullscreenExit) {
+        btnHudFullscreenExit.addEventListener("click", function() {
+          if (document.fullscreenElement) {
+            toggleFullscreen();
+          } else {
+            document.body.classList.remove("is-fullscreen");
+          }
+        });
+      }
+      if (btnExitFullscreenHud) {
+        btnExitFullscreenHud.addEventListener("click", function() {
+          if (document.fullscreenElement) {
+            toggleFullscreen();
+          } else {
+            document.body.classList.remove("is-fullscreen");
+          }
+        });
+      }
+
+      // Settings Drawer Open / Close
+      function openSettings() {
+        if (settingsDrawer) {
+          settingsDrawer.style.display = "flex";
+          void settingsDrawer.offsetHeight;
+          settingsDrawer.classList.add("open");
+        }
+        if (settingsDrawerBackdrop) {
+          settingsDrawerBackdrop.style.display = "block";
+          void settingsDrawerBackdrop.offsetHeight;
+          settingsDrawerBackdrop.style.opacity = "1";
+        }
+      }
+
+      function closeSettings() {
+        if (settingsDrawer) {
+          settingsDrawer.classList.remove("open");
+          setTimeout(function() {
+            if (!settingsDrawer.classList.contains("open")) {
+              settingsDrawer.style.display = "none";
+            }
+          }, 300);
+        }
+        if (settingsDrawerBackdrop) {
+          settingsDrawerBackdrop.style.opacity = "0";
+          setTimeout(function() {
+            if (!settingsDrawer || !settingsDrawer.classList.contains("open")) {
+              settingsDrawerBackdrop.style.display = "none";
+            }
+          }, 250);
+        }
+      }
+
+      if (btnOpenSettings) btnOpenSettings.addEventListener("click", openSettings);
+      if (btnHudSettings) btnHudSettings.addEventListener("click", openSettings);
+      if (btnCloseSettings) btnCloseSettings.addEventListener("click", closeSettings);
+      if (settingsDrawerBackdrop) settingsDrawerBackdrop.addEventListener("click", closeSettings);
+
+      // Touch controls synchronization
+      if (chkTouch) {
+        chkTouch.addEventListener("change", function(e) {
+          document.body.classList.toggle("touch-enabled", e.target.checked);
+          if (chkHudTouch) chkHudTouch.checked = e.target.checked;
+        });
+        if (chkTouch.checked) {
+          document.body.classList.add("touch-enabled");
+        }
+      }
+
+      if (chkHudTouch) {
+        chkHudTouch.addEventListener("change", function(e) {
+          if (chkTouch) {
+            chkTouch.checked = e.target.checked;
+            chkTouch.dispatchEvent(new Event("change"));
+          } else {
+            document.body.classList.toggle("touch-enabled", e.target.checked);
+          }
+        });
+      }
+
+      // Touch-reveal HUD on mobile in fullscreen
+      let hudTimer = null;
+      if (screenWrapper && floatingHud) {
+        screenWrapper.addEventListener("touchstart", function(e) {
+          if (!document.body.classList.contains("is-fullscreen")) return;
+          if (e.target.closest("#floatingGameHud") || e.target.closest(".touch-widget")) return;
+          floatingHud.classList.add("hud-active");
+          if (hudTimer) clearTimeout(hudTimer);
+          hudTimer = setTimeout(function() {
+            floatingHud.classList.remove("hud-active");
+          }, 3500);
+        }, { passive: true });
+      }
+    })();
+  </script>
 </body>
 </html>
