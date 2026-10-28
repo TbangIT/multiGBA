@@ -169,13 +169,28 @@ let gridImageData = ctx.createImageData(GBA_WIDTH * 2, GBA_HEIGHT * 2);
 let gridPixels = new Uint32Array(gridImageData.data.buffer);
 
 function updateCanvasAspectRatio(aspectOrMode) {
+  let targetMode = aspectOrMode;
+  if (!targetMode) {
+    if (typeof currentMode !== "undefined" && currentMode === "dual") {
+      targetMode = "split";
+    } else if (typeof currentMode !== "undefined" && currentMode === "netplay") {
+      targetMode = (typeof netplayViewMode !== "undefined" && netplayViewMode) ? netplayViewMode : "solo";
+    } else {
+      targetMode = "solo";
+    }
+  }
+
   let ratio = "3 / 2";
-  if (aspectOrMode === "split" || aspectOrMode === "dual" || aspectOrMode === "3 / 1") {
+  let ratioVal = 1.5;
+  if (targetMode === "split" || targetMode === "dual" || targetMode === "3 / 1") {
     ratio = "3 / 1";
-  } else if (aspectOrMode === "grid" || aspectOrMode === "480 / 320") {
+    ratioVal = 3.0;
+  } else if (targetMode === "grid" || targetMode === "480 / 320") {
     ratio = "3 / 2";
+    ratioVal = 1.5;
   } else {
     ratio = "3 / 2";
+    ratioVal = 1.5;
   }
   if (canvas) {
     canvas.style.removeProperty("width");
@@ -183,9 +198,17 @@ function updateCanvasAspectRatio(aspectOrMode) {
     canvas.style.width = "";
     canvas.style.height = "";
     canvas.style.setProperty("--gba-aspect-ratio", ratio);
+    canvas.style.setProperty("--gba-ratio-num", String(ratioVal));
   }
   const wrapper = document.getElementById("screenWrapper");
-  if (wrapper) wrapper.style.setProperty("--gba-aspect-ratio", ratio);
+  if (wrapper) {
+    wrapper.style.removeProperty("width");
+    wrapper.style.removeProperty("height");
+    wrapper.style.setProperty("--gba-aspect-ratio", ratio);
+    wrapper.style.setProperty("--gba-ratio-num", String(ratioVal));
+  }
+  document.documentElement.style.setProperty("--gba-aspect-ratio", ratio);
+  document.documentElement.style.setProperty("--gba-ratio-num", String(ratioVal));
 }
 window.updateCanvasAspectRatio = updateCanvasAspectRatio;
 updateCanvasAspectRatio("solo");
@@ -1295,8 +1318,7 @@ function netHostTryGo(force) {
 
 // Frame Timing and Animation Loop
 let frameCount = 0;              // passi di EMULAZIONE (a 2x sono 120/s)
-let renderCount = 0, renderPending = false, lastRenderAt = 0;
-const RENDER_MIN_MS = 1000 / 60 - 1.2;   // schermo: massimo 60 disegni al secondo (anche a 2x e con monitor 120/144 Hz)
+let renderCount = 0, lastRenderAt = 0;
 let lastFpsTime = performance.now();
 let lastAutoSavestateWallClock = Date.now();
 let totalFramesSimulated = 0;
@@ -1725,23 +1747,36 @@ function mainRafLoop(now) {
     const steps = pumpEmulation(now);
     perf.raf(now, performance.now() - pumpT0);
 
-    // Si emula quanto serve (2x = 2 passi per 16,7 ms) ma si disegna al massimo a 60 FPS: l'ultimo frame pronto non si perde.
-    if (steps > 0) renderPending = true;
-    if (renderPending && now - lastRenderAt >= RENDER_MIN_MS) {
-      const r0 = performance.now();
-      renderCanvasOnly();
-      perf.render(performance.now() - r0);
-      lastRenderAt = now; renderPending = false; renderCount++;
+    // Rendering deterministico legato ai frame video GBA:
+    // Risoluzione bug 45 FPS su display 90Hz e timing stabile a 60 FPS su qualsiasi monitor (60Hz, 75Hz, 90Hz, 120Hz, 144Hz+)
+    if (steps > 0) {
+      // Quando steps > 0 un nuovo frame video GBA è stato prodotto dal core mGBA.
+      // A velocità 1x (roomSpeed !== 2), disegna sempre il frame generato (~59.73 FPS).
+      // A velocità 2x (roomSpeed === 2, 120 FPS emulati), disegna quando totalFramesSimulated % 2 === 0
+      // per produrre esattamente 60 FPS disegnati su schermo senza sprechi né aliasing.
+      const shouldDraw = (roomSpeed !== 2) || (totalFramesSimulated % 2 === 0);
+      if (shouldDraw) {
+        const r0 = performance.now();
+        renderCanvasOnly();
+        perf.render(performance.now() - r0);
+        lastRenderAt = now;
+        renderCount++;
+      }
     }
     perf.tick(now);
 
     // FPS update every 500ms: FPS = frame DISEGNATI; fra parentesi i passi di emulazione se diversi (2x)
     if (now - lastFpsTime >= 500) {
       const dtF = now - lastFpsTime;
-      const drawFps = Math.round((renderCount * 1000) / dtF), simFps = Math.round((frameCount * 1000) / dtF);
-      fpsBadge.innerHTML = `<span class="indicator"></span> ${drawFps} FPS` + (simFps > drawFps + 4 ? ` <small>(emul. ${simFps}/s)</small>` : "");
-      window.lastReportedFps = drawFps; window.lastReportedSps = simFps;
-      frameCount = 0; renderCount = 0;
+      const drawFps = Math.round((renderCount * 1000) / dtF);
+      const simFps = Math.round((frameCount * 1000) / dtF);
+      if (fpsBadge) {
+        fpsBadge.innerHTML = `<span class="indicator"></span> ${drawFps} FPS` + (simFps > drawFps + 4 ? ` <small>(emul. ${simFps}/s)</small>` : "");
+      }
+      window.lastReportedFps = drawFps;
+      window.lastReportedSps = simFps;
+      frameCount = 0;
+      renderCount = 0;
       lastFpsTime = now;
     }
   } else {
@@ -3877,30 +3912,78 @@ window.gbaDebug = {
   kickPlayer: (slot) => kickPlayer(slot),
   cancelHosting: () => cancelHosting(),
   toggleFullscreen: () => toggleFullscreen(),
-  exitFullscreen: () => exitFullscreen()
+  exitFullscreen: () => exitFullscreen(),
+  isFullscreen: () => isFullscreen(),
+  toggleTheaterMode: (forceState) => toggleTheaterMode(forceState),
+  isTheaterMode: () => isTheaterMode()
 };
 
 // -------------------------------------------------------------
-// Fullscreen, Drawer & Contextual Controls (Ponytail Ultra)
+// Theater Mode & Fullscreen Management (Ponytail Ultra)
 // -------------------------------------------------------------
+function isTheaterMode() {
+  return document.body.classList.contains("is-theater");
+}
+
+function updateTheaterButtonUI() {
+  const active = isTheaterMode();
+  const btnTheater = document.getElementById("btnTheaterToggle");
+  if (btnTheater) {
+    btnTheater.innerText = active ? "[🗗 Riduci]" : "[🗖 Finestra]";
+    btnTheater.classList.toggle("active", active);
+    btnTheater.setAttribute("aria-pressed", active ? "true" : "false");
+    btnTheater.title = active ? "Riduci dimensione finestra (disattiva modalità teatro)" : "Ingrandisci finestra browser (modalità teatro)";
+  }
+}
+
+function toggleTheaterMode(forceState) {
+  const newState = typeof forceState === "boolean" ? forceState : !isTheaterMode();
+  document.body.classList.toggle("is-theater", newState);
+  updateTheaterButtonUI();
+  if (typeof updateCanvasAspectRatio === "function") {
+    updateCanvasAspectRatio();
+  }
+  return newState;
+}
+
+function isFullscreen() {
+  return !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
+}
+
+function updateFullscreenButtonUI() {
+  const isFs = isFullscreen() || document.body.classList.contains("is-fullscreen");
+  const btnFs = document.getElementById("btnFullscreenToggle");
+  if (btnFs) {
+    btnFs.innerText = isFs ? "[✕ Esci]" : "[⛶ Tutto Schermo]";
+    btnFs.classList.toggle("active", isFs);
+    btnFs.setAttribute("aria-pressed", isFs ? "true" : "false");
+    btnFs.title = isFs ? "Esci da Schermo Intero" : "Attiva Schermo Intero nativo";
+  }
+  const btnExitHud = document.getElementById("btnExitFullscreenHud");
+  if (btnExitHud) {
+    btnExitHud.innerText = "[✕ Esci]";
+  }
+  const btnHudFsExit = document.getElementById("btnHudFullscreenExit");
+  if (btnHudFsExit) {
+    btnHudFsExit.innerText = "[✕ Esci Fullscreen]";
+  }
+}
+
 function toggleFullscreen() {
-  const el = document.getElementById("screenWrapper") || canvas;
-  const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
-  if (!isFs) {
-    if (el && el.requestFullscreen) {
-      el.requestFullscreen().catch(() => {
+  if (!isFullscreen()) {
+    const docEl = document.documentElement;
+    const req = docEl.requestFullscreen || docEl.webkitRequestFullscreen || docEl.mozRequestFullScreen || docEl.msRequestFullscreen;
+    if (req) {
+      req.call(docEl).catch((err) => {
+        console.warn("Fullscreen request failed, fallback to class:", err);
         document.body.classList.toggle("is-fullscreen");
+        updateFullscreenButtonUI();
+        if (typeof updateCanvasAspectRatio === "function") updateCanvasAspectRatio();
       });
-    } else if (el && el.webkitRequestFullscreen) {
-      el.webkitRequestFullscreen();
-    } else if (el && el.webkitEnterFullscreen) {
-      el.webkitEnterFullscreen();
-    } else if (el && el.mozRequestFullScreen) {
-      el.mozRequestFullScreen();
-    } else if (el && el.msRequestFullscreen) {
-      el.msRequestFullscreen();
     } else {
       document.body.classList.toggle("is-fullscreen");
+      updateFullscreenButtonUI();
+      if (typeof updateCanvasAspectRatio === "function") updateCanvasAspectRatio();
     }
   } else {
     exitFullscreen();
@@ -3908,26 +3991,31 @@ function toggleFullscreen() {
 }
 
 function exitFullscreen() {
-  if (document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement) {
-    if (document.exitFullscreen) {
-      document.exitFullscreen().catch(() => {});
-    } else if (document.webkitExitFullscreen) {
-      document.webkitExitFullscreen();
-    } else if (document.mozCancelFullScreen) {
-      document.mozCancelFullScreen();
-    } else if (document.msExitFullscreen) {
-      document.msExitFullscreen();
+  if (isFullscreen()) {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+    if (exit) {
+      exit.call(document).catch((err) => {
+        console.warn("Fullscreen exit error:", err);
+      });
     }
   }
   document.body.classList.remove("is-fullscreen");
+  updateFullscreenButtonUI();
+  if (typeof updateCanvasAspectRatio === "function") {
+    updateCanvasAspectRatio();
+  }
 }
 
 function handleFullscreenChange() {
-  const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
+  const isFs = isFullscreen();
   if (isFs) {
     document.body.classList.add("is-fullscreen");
   } else {
     document.body.classList.remove("is-fullscreen");
+  }
+  updateFullscreenButtonUI();
+  if (typeof updateCanvasAspectRatio === "function") {
+    updateCanvasAspectRatio();
   }
 }
 document.addEventListener("fullscreenchange", handleFullscreenChange);
@@ -3935,8 +4023,11 @@ document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
 document.addEventListener("mozfullscreenchange", handleFullscreenChange);
 document.addEventListener("MSFullscreenChange", handleFullscreenChange);
 
+window.toggleTheaterMode = toggleTheaterMode;
+window.isTheaterMode = isTheaterMode;
 window.toggleFullscreen = toggleFullscreen;
 window.exitFullscreen = exitFullscreen;
+window.isFullscreen = isFullscreen;
 
 function openSettingsDrawer() {
   const drawer = document.getElementById("settingsDrawer");
@@ -4000,9 +4091,15 @@ window.addEventListener("DOMContentLoaded", updateTouchEnabledClass);
 setTimeout(updateTouchEnabledClass, 100);
 setTimeout(updateTouchEnabledClass, 500);
 
-// Global delegation for UI actions (Fullscreen, Settings, Kick, Cancel)
+// Global delegation for UI actions (Theater, Fullscreen, Settings, Kick, Cancel)
 document.addEventListener("click", (e) => {
   if (!e.target) return;
+  // Theater mode toggle
+  if (e.target.id === "btnTheaterToggle" || e.target.closest("#btnTheaterToggle")) {
+    e.preventDefault();
+    toggleTheaterMode();
+    return;
+  }
   // Fullscreen toggle
   if (e.target.id === "btnFullscreenToggle" || e.target.closest("#btnFullscreenToggle")) {
     e.preventDefault();
@@ -4062,6 +4159,10 @@ const btnCancelHostingEl = document.getElementById("btnCancelHosting");
 if (btnCancelHostingEl) {
   btnCancelHostingEl.addEventListener("click", cancelHosting);
 }
+const btnTheaterEl = document.getElementById("btnTheaterToggle");
+if (btnTheaterEl) {
+  btnTheaterEl.addEventListener("click", toggleTheaterMode);
+}
 const btnFsToggleEl = document.getElementById("btnFullscreenToggle");
 if (btnFsToggleEl) {
   btnFsToggleEl.addEventListener("click", toggleFullscreen);
@@ -4086,5 +4187,13 @@ const btnHudSettingsEl = document.getElementById("btnHudSettings");
 if (btnHudSettingsEl) {
   btnHudSettingsEl.addEventListener("click", toggleSettingsDrawer);
 }
+
+// Initial UI state synchronization
+updateTheaterButtonUI();
+updateFullscreenButtonUI();
+window.addEventListener("DOMContentLoaded", () => {
+  updateTheaterButtonUI();
+  updateFullscreenButtonUI();
+});
 
 window.addEventListener("load", initCore);
