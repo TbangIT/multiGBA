@@ -10,44 +10,56 @@
   <script src="touch-controls.js?v=2.3"></script>
 </head>
 <body>
-  <header>
-    <div class="header-left">
-      <div class="logo-area">
-        <div class="logo-badge">P2P WEBRTC</div>
-        <h1>mGBA Online Netplay</h1>
+  <header class="topbar-fixed">
+    <!-- Sezione Sinistra (Brand & Status) -->
+    <div class="topbar-section topbar-left header-left">
+      <div class="topbar-brand logo-area">
+        <span class="logo-badge">P2P LINK</span>
+        <h1 class="brand-title">Rebit GBA</h1>
       </div>
-      <div class="status-bar">
+      <div class="badge-capsule status-bar">
         <div class="badge" id="romBadge">ROM: Inizializzazione...</div>
-        <div class="badge" id="saveBadge" style="display:none">Salvataggio: Nessuno</div>
-        <div class="badge" id="modeBadge">Modalita: Singolo (P1)</div>
         <div class="badge active" id="fpsBadge"><span class="indicator"></span> 0 FPS</div>
-        <div class="badge" id="speedBadge" style="display:none">Velocita: 1x (60 FPS)</div>
+        <div class="badge" id="modeBadge">Modalita: Singolo (P1)</div>
         <div class="badge" id="netBadge" style="display:none" title="Ping reale e anticipo input (frame)">Ping ...</div>
+        <div class="badge" id="speedBadge" style="display:none">Velocita: 1x (60 FPS)</div>
+        <div class="badge" id="saveBadge" style="display:none">Salvataggio: Nessuno</div>
       </div>
     </div>
 
-    <div class="header-right">
-      <!-- Quick ROM Loader -->
-      <input type="file" id="inputRomFile" accept=".gba" style="display: none;">
-      <button class="btn-header" id="btnLoadRom" title="Carica una ROM Game Boy Advance (.gba)">
-        [ROM] Carica .gba
-      </button>
+    <!-- Sezione Centro (Navbar Gioco Coesa) -->
+    <div class="topbar-section topbar-center">
+      <div class="nav-btn-group">
+        <!-- Quick ROM Loader -->
+        <input type="file" id="inputRomFile" accept=".gba" style="display: none;">
+        <button class="btn-header nav-btn" id="btnLoadRom" title="Carica una ROM Game Boy Advance (.gba)">
+          [📁 ROM]
+        </button>
 
-      <!-- Quick Play/Pause -->
-      <button class="btn-header btn-primary" id="btnPlayPause" title="Metti in pausa o riprendi l'emulazione">
-        [▶/||] Pausa
-      </button>
+        <!-- Quick Play/Pause -->
+        <button class="btn-header nav-btn btn-primary" id="btnPlayPause" title="Metti in pausa o riprendi l'emulazione">
+          [▶/|| Gioca]
+        </button>
 
-      <!-- Quick Audio Toggle -->
-      <button class="btn-header" id="btnAudioToggle" title="Attiva/Disattiva audio">
-        [Audio]
-      </button>
+        <!-- Quick Audio Toggle -->
+        <button class="btn-header nav-btn" id="btnAudioToggle" title="Attiva/Disattiva audio">
+          [🔊 Audio]
+        </button>
 
-      <!-- Fullscreen Toggle -->
-      <button class="btn-header" id="btnFullscreenToggle" title="Attiva Schermo Intero (Fullscreen)">
-        [⛶ Fullscreen]
-      </button>
+        <!-- Theater Window Toggle -->
+        <button class="btn-header nav-btn" id="btnTheaterToggle" title="Ingrandisci a Finestra (Modalità Teatro)">
+          [🗖 Finestra]
+        </button>
 
+        <!-- Native OS Fullscreen Toggle -->
+        <button class="btn-header nav-btn" id="btnFullscreenToggle" title="Attiva Schermo Intero OS">
+          [⛶ Tutto Schermo]
+        </button>
+      </div>
+    </div>
+
+    <!-- Sezione Destra (Utility & Online) -->
+    <div class="topbar-section topbar-right header-right">
       <!-- Touch Controls Toggle -->
       <label class="toggle-control btn-header-touch" id="lblTouchControlsToggle" title="Mostra/Nascondi Controlli Touch a schermo">
         <input type="checkbox" id="chkTouchControls">
@@ -56,7 +68,7 @@
 
       <!-- Online Netplay Link Cable Trigger -->
       <button class="btn-header highlight btn-netplay" id="btnOpenNetplayModal" title="Apri Cavo Link P2P Multiplayer">
-        [ONLINE] Cavo Link P2P
+        [🌐 Cavo Link]
       </button>
 
       <!-- Open Settings Drawer -->
@@ -555,6 +567,7 @@
     (function() {
       // Elements
       const btnFullscreenToggle = document.getElementById("btnFullscreenToggle");
+      const btnTheaterToggle = document.getElementById("btnTheaterToggle");
       const btnHudFullscreenExit = document.getElementById("btnHudFullscreenExit");
       const btnExitFullscreenHud = document.getElementById("btnExitFullscreenHud");
       const btnOpenSettings = document.getElementById("btnOpenSettings");
@@ -566,6 +579,19 @@
       const chkHudTouch = document.getElementById("chkHudTouchToggle");
       const floatingHud = document.getElementById("floatingGameHud");
       const screenWrapper = document.getElementById("screenWrapper");
+
+      // Theater Mode handling (Window expansion)
+      function toggleTheater() {
+        document.body.classList.toggle("is-theater");
+        const isTheater = document.body.classList.contains("is-theater");
+        if (btnTheaterToggle) {
+          btnTheaterToggle.innerHTML = isTheater ? '[🗗 Normale]' : '[🗖 Finestra]';
+        }
+      }
+      if (btnTheaterToggle) {
+        btnTheaterToggle.addEventListener("click", toggleTheater);
+      }
+      window.toggleTheater = toggleTheater;
 
       // Fullscreen handling
       function toggleFullscreen() {
@@ -597,7 +623,7 @@
         const isFs = !!document.fullscreenElement;
         document.body.classList.toggle("is-fullscreen", isFs);
         if (btnFullscreenToggle) {
-          btnFullscreenToggle.innerHTML = isFs ? '[🗗 Finestra]' : '[⛶ Fullscreen]';
+          btnFullscreenToggle.innerHTML = isFs ? '[⛶ Esci Fullscreen]' : '[⛶ Tutto Schermo]';
         }
       }
 
