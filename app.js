@@ -880,7 +880,79 @@ function base64ToUint8(base64) {
   return bytes;
 }
 
-// Browser-Persistent .sav Storage Management (per-game in localStorage)
+// Browser-Persistent .sav Storage Management (IndexedDB primary + localStorage fallback)
+const DB_NAME = "multigba_saves_v1";
+const DB_VERSION = 1;
+const STORE_SAVES = "saves";
+
+// Richiesta persistenza browser (impedisce a Chrome Android / Safari iOS di eliminare i salvataggi sotto pressione memoria)
+if (typeof navigator !== "undefined" && navigator.storage && navigator.storage.persist) {
+  navigator.storage.persist().then((persistent) => {
+    if (persistent) console.log("[Storage] Persistenza browser garantita con successo.");
+  }).catch(() => {});
+}
+
+function openSavesDb() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") {
+      return reject(new Error("IndexedDB non disponibile"));
+    }
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE_SAVES)) {
+        db.createObjectStore(STORE_SAVES, { keyPath: "key" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbSaveSram(key, bytes, romName, romBaseName) {
+  try {
+    const db = await openSavesDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_SAVES, "readwrite");
+      const store = tx.objectStore(STORE_SAVES);
+      store.put({
+        key,
+        bytes: bytes.slice(0), // copia Uint8Array binario nativo
+        romName: romName || loadedRomName,
+        romBaseName: romBaseName || loadedRomBaseName,
+        updatedAt: Date.now()
+      });
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn("[Save-IDB] Errore salvataggio IndexedDB:", err);
+    return false;
+  }
+}
+
+async function idbLoadSram(key) {
+  try {
+    const db = await openSavesDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_SAVES, "readonly");
+      const store = tx.objectStore(STORE_SAVES);
+      const req = store.get(key);
+      req.onsuccess = () => {
+        if (req.result && req.result.bytes) {
+          resolve(new Uint8Array(req.result.bytes));
+        } else {
+          resolve(null);
+        }
+      };
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.warn("[Save-IDB] Errore lettura IndexedDB:", err);
+    return null;
+  }
+}
+
 function getSramStorageKey(romBase) {
   const base = romBase || loadedRomBaseName || "default_gba";
   const sanitized = base.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase();
@@ -889,8 +961,13 @@ function getSramStorageKey(romBase) {
 
 function saveSramToBrowserStorage(romBase, bytes) {
   if (!bytes || bytes.length === 0) return false;
+  const key = getSramStorageKey(romBase);
+
+  // 1. Archiviazione diretta in IndexedDB (gestisce file binari senza limiti stringa/quota di Android)
+  idbSaveSram(key, bytes, loadedRomName, loadedRomBaseName);
+
+  // 2. Fallback sincrono in localStorage
   try {
-    const key = getSramStorageKey(romBase);
     const b64 = uint8ToBase64(bytes);
     localStorage.setItem(key, b64);
     localStorage.setItem("gba_sav_last_active_key", key);
@@ -909,11 +986,10 @@ function saveSramToBrowserStorage(romBase, bytes) {
       updatedAt: new Date().toISOString()
     };
     localStorage.setItem("gba_saves_index", JSON.stringify(index));
-    return true;
   } catch (err) {
-    console.warn("Could not save SRAM to browser storage", err);
-    return false;
+    console.warn("[Save] localStorage pieno o ristretto da mobile; salvato in IndexedDB.", err);
   }
+  return true;
 }
 
 function loadSramFromBrowserStorage(romBase) {
@@ -935,6 +1011,24 @@ function loadSramFromBrowserStorage(romBase) {
     }
   } catch (err) {
     console.warn("Could not load SRAM from browser storage", err);
+  }
+  return null;
+}
+
+async function loadSramRobust(romBase) {
+  const key = getSramStorageKey(romBase);
+  try {
+    const idbBytes = await idbLoadSram(key);
+    if (idbBytes && idbBytes.length === SRAM_SIZE && !isSramEmpty(idbBytes)) {
+      console.log(`[Save] Salvataggio caricato da IndexedDB per ${romBase}`);
+      return idbBytes;
+    }
+  } catch (_) {}
+  const lsBytes = loadSramFromBrowserStorage(romBase);
+  if (lsBytes && !isSramEmpty(lsBytes)) {
+    console.log(`[Save] Salvataggio caricato da localStorage per ${romBase}`);
+    idbSaveSram(key, lsBytes, loadedRomName, loadedRomBaseName);
+    return lsBytes;
   }
   return null;
 }
@@ -2668,13 +2762,13 @@ if (btnLoadRom && inputRomFile) {
     loadedRomName = file.name;
     loadedRomBaseName = file.name.replace(/\.[^/.]+$/, "");
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       window.romBytes = new Uint8Array(event.target.result);
       romBadge.innerText = `ROM: ${loadedRomName}`;
       console.log(`[ROM] Caricata ROM ${loadedRomName} (${window.romBytes.length} bytes)`);
 
-      // Automatic restoration of .sav from browser storage for this ROM
-      const browserSram = loadSramFromBrowserStorage(loadedRomBaseName);
+      // Automatic restoration of .sav from IndexedDB / localStorage for this ROM
+      const browserSram = await loadSramRobust(loadedRomBaseName);
       if (browserSram && !isSramEmpty(browserSram)) {
         window.localSram = browserSram;
         saveBadge.innerText = "Salvataggio: Browser (128 KB)";
@@ -3895,8 +3989,14 @@ async function initCore() {
       showInGameNotice("[ROM] Carica la tua ROM con il tasto [ROM] Carica .gba per iniziare.", 8000);
     }
 
-    // Load Save from localStorage if present
-    window.localSram = loadSavedSram();
+    // Load Save from IndexedDB / localStorage if present
+    const robustSram = await loadSramRobust(loadedRomBaseName);
+    if (robustSram && !isSramEmpty(robustSram)) {
+      window.localSram = robustSram;
+      saveBadge.innerText = "Salvataggio: Browser (128 KB)";
+    } else {
+      window.localSram = loadSavedSram();
+    }
 
     if (window.romBytes) {
       loadingText.innerText = "Avvio Emulazione GBA...";
