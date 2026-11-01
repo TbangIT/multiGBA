@@ -3,7 +3,7 @@
 //  * Frammentazione: i messaggi di controllo (salvataggi .sav) possono superare i limiti dei broker pubblici.
 //  * JSON che trasporta anche binari ({$b: base64}) come fa il canale PeerJS.
 // Formato frame (prima di cifrare): [kind u8][fromLen u8][from][msgId u16][idx u16][cnt u16][payload]
-const RebitMqttCodec = (() => {
+const MultiGbaMqttCodec = (() => {
   const enc = new TextEncoder(), dec = new TextDecoder();
   const KIND = { CTRL: 1, BIN: 2, KEEP: 3, BYE: 4, JOIN: 5, WELCOME: 6 };
   const CHUNK = 40 * 1024;
@@ -20,11 +20,11 @@ const RebitMqttCodec = (() => {
   async function deriveRoom(code) {
     const subtle = (typeof crypto !== "undefined") && crypto.subtle;
     if (!subtle) throw new Error("WebCrypto non disponibile (serve HTTPS)");
-    const base = await subtle.importKey("raw", enc.encode("rebit-gba-v1|" + String(code).toUpperCase()), "PBKDF2", false, ["deriveBits"]);
-    const bits = await subtle.deriveBits({ name: "PBKDF2", salt: enc.encode("rebit-gba-salt-v1"), iterations: 60000, hash: "SHA-256" }, base, 320);
+    const base = await subtle.importKey("raw", enc.encode("multigba-v1|" + String(code).toUpperCase()), "PBKDF2", false, ["deriveBits"]);
+    const bits = await subtle.deriveBits({ name: "PBKDF2", salt: enc.encode("multigba-salt-v1"), iterations: 60000, hash: "SHA-256" }, base, 320);
     const key = await subtle.importKey("raw", bits.slice(0, 32), "AES-GCM", false, ["encrypt", "decrypt"]);
     const fastKey = new Uint8Array(bits.slice(0, 32));
-    return { key, fastKey, topic: "rebit-gba/v1/" + hex(new Uint8Array(bits.slice(32, 40))) };
+    return { key, fastKey, topic: "multigba/v1/" + hex(new Uint8Array(bits.slice(32, 40))) };
   }
 
   // Cifratura e decifratura sincrona ultra-rapida per input binari (K.BIN, zero overhead di microtask / Promise)
@@ -95,3 +95,5 @@ const RebitMqttCodec = (() => {
   }
   return { KIND, isBuf, toU8, toJson, fromJson, deriveRoom, seal, open, fastSeal, fastOpen, frames, parse, Reassembler };
 })();
+window.MultiGbaMqttCodec = MultiGbaMqttCodec;
+window.RebitMqttCodec = MultiGbaMqttCodec;
