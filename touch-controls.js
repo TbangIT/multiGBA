@@ -14,7 +14,9 @@
 (function () {
   "use strict";
 
-  const STORAGE_KEY_LAYOUT = "multigba_touch_layout_v1";
+  const STORAGE_KEY_PORTRAIT = "multigba_touch_layout_portrait_v2";
+  const STORAGE_KEY_LANDSCAPE = "multigba_touch_layout_landscape_v2";
+  const STORAGE_KEY_LEGACY = "multigba_touch_layout_v1";
   const STORAGE_KEY_ENABLED = "multigba_touch_enabled";
 
   // Mappatura bitmask GBA
@@ -49,9 +51,10 @@
   let isEditing = false;
   let selectedWidgetId = null;
   let activeDpadTouchId = null;
+  let activeOrientation = "portrait";
 
-  // Layout predefinito con posizioni ergonomiche per singoli tasti (ottimizzato mobile portrait)
-  const DEFAULT_LAYOUT = {
+  // 1. Layout predefinito VERTICALE (mobile portrait: schermo in alto, gamepad sotto)
+  const DEFAULT_LAYOUT_PORTRAIT = {
     scale: 1.0,
     opacity: 0.8,
     widgets: {
@@ -67,10 +70,34 @@
     }
   };
 
-  let currentLayout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
+  // 2. Layout predefinito ORIZZONTALE (fullscreen landscape: schermo al centro, comandi ai lati/ali)
+  const DEFAULT_LAYOUT_LANDSCAPE = {
+    scale: 1.0,
+    opacity: 0.8,
+    widgets: {
+      dpad:      { bottom: "24px", left: "24px",  scale: 1.0 },
+      btnL:      { top: "16px",    left: "20px",  scale: 1.0 },
+      btnR:      { top: "16px",    right: "20px", scale: 1.0 },
+      btnB:      { bottom: "30px", right: "92px", scale: 1.0 },
+      btnA:      { bottom: "78px", right: "20px", scale: 1.0 },
+      btnAB:     { bottom: "20px", right: "20px", scale: 0.88 },
+      btnSelect: { bottom: "14px", left: "calc(50% - 90px)", scale: 0.9 },
+      btnStart:  { bottom: "14px", left: "calc(50% - 20px)", scale: 0.9 },
+      btnSpeed:  { bottom: "14px", left: "calc(50% + 50px)", scale: 0.9 }
+    }
+  };
+
+  let portraitLayout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT_PORTRAIT));
+  let landscapeLayout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT_LANDSCAPE));
+  let currentLayout = portraitLayout;
+
+  function detectOrientation() {
+    const isLandscape = (window.matchMedia && window.matchMedia("(orientation: landscape)").matches) || (window.innerWidth > window.innerHeight);
+    return isLandscape ? "landscape" : "portrait";
+  }
 
   // Valida che una coordinata non sia corrotta o impostata a 0,0 in alto a sinistra o fuori dai limiti
-  function isValidPosition(pos) {
+  function isValidPosition(pos, orient) {
     if (!pos || typeof pos !== "object") return false;
     const l = String(pos.left || "").trim();
     const t = String(pos.top || "").trim();
@@ -78,7 +105,7 @@
       return false;
     }
     // Protezione contro vecchie coordinate 'top' in px a schermo intero che spingerebbero i tasti fuori dalla finestra
-    if (t.endsWith("px")) {
+    if (orient === "portrait" && t.endsWith("px")) {
       const topNum = parseFloat(t);
       if (topNum > 360) return false;
     }
@@ -87,35 +114,69 @@
     return Boolean(hasH && hasV);
   }
 
-  function loadSavedLayout() {
+  function loadSingleLayout(orient) {
+    const key = orient === "landscape" ? STORAGE_KEY_LANDSCAPE : STORAGE_KEY_PORTRAIT;
+    const def = orient === "landscape" ? DEFAULT_LAYOUT_LANDSCAPE : DEFAULT_LAYOUT_PORTRAIT;
+    const result = JSON.parse(JSON.stringify(def));
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_LAYOUT);
+      let saved = localStorage.getItem(key);
+      if (!saved && orient === "portrait") {
+        saved = localStorage.getItem(STORAGE_KEY_LEGACY);
+      }
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === "object") {
-          currentLayout.scale = parsed.scale || DEFAULT_LAYOUT.scale;
-          currentLayout.opacity = parsed.opacity || DEFAULT_LAYOUT.opacity;
+          result.scale = parsed.scale || def.scale;
+          result.opacity = parsed.opacity || def.opacity;
           if (parsed.widgets && typeof parsed.widgets === "object") {
             for (const [id, pos] of Object.entries(parsed.widgets)) {
-              if (isValidPosition(pos)) {
-                currentLayout.widgets[id] = pos;
+              if (isValidPosition(pos, orient)) {
+                result.widgets[id] = pos;
               }
             }
           }
         }
       }
     } catch (e) {
-      console.warn("[Touch] Errore caricamento layout salvato:", e);
+      console.warn(`[Touch] Errore caricamento layout ${orient}:`, e);
     }
+    return result;
+  }
+
+  function loadSavedLayouts() {
+    portraitLayout = loadSingleLayout("portrait");
+    landscapeLayout = loadSingleLayout("landscape");
+    activeOrientation = detectOrientation();
+    currentLayout = activeOrientation === "landscape" ? landscapeLayout : portraitLayout;
   }
 
   function saveCurrentLayout() {
     try {
+      const orient = activeOrientation || detectOrientation();
+      const key = orient === "landscape" ? STORAGE_KEY_LANDSCAPE : STORAGE_KEY_PORTRAIT;
       const data = JSON.stringify(currentLayout);
-      localStorage.setItem(STORAGE_KEY_LAYOUT, data);
+      localStorage.setItem(key, data);
+      if (orient === "landscape") {
+        landscapeLayout = JSON.parse(data);
+      } else {
+        portraitLayout = JSON.parse(data);
+      }
     } catch (e) {
       console.warn("[Touch] Errore salvataggio layout:", e);
     }
+  }
+
+  function resetCurrentLayout() {
+    const orient = activeOrientation || detectOrientation();
+    const def = orient === "landscape" ? DEFAULT_LAYOUT_LANDSCAPE : DEFAULT_LAYOUT_PORTRAIT;
+    currentLayout = JSON.parse(JSON.stringify(def));
+    if (orient === "landscape") {
+      landscapeLayout = currentLayout;
+    } else {
+      portraitLayout = currentLayout;
+    }
+    saveCurrentLayout();
+    applyLayoutToDom();
   }
 
   function triggerHaptic() {
@@ -153,13 +214,14 @@
 
     updateToolbarSelection();
 
+    const activeDefaults = (activeOrientation === "landscape" ? DEFAULT_LAYOUT_LANDSCAPE : DEFAULT_LAYOUT_PORTRAIT).widgets;
     const widgets = currentLayout.widgets || {};
-    for (const [id, defaultPos] of Object.entries(DEFAULT_LAYOUT.widgets)) {
+    for (const [id, defaultPos] of Object.entries(activeDefaults)) {
       const el = document.querySelector(`.touch-widget[data-touch-id="${id}"]`);
       if (!el) continue;
 
       const userPos = widgets[id];
-      const pos = (userPos && isValidPosition(userPos)) ? userPos : defaultPos;
+      const pos = (userPos && isValidPosition(userPos, activeOrientation)) ? userPos : defaultPos;
 
       el.style.top = pos.top || "auto";
       el.style.bottom = pos.bottom || "auto";
@@ -606,9 +668,7 @@
     const btnReset = document.getElementById("btnResetTouchLayout");
     if (btnReset) {
       btnReset.addEventListener("click", () => {
-        currentLayout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
-        saveCurrentLayout();
-        applyLayoutToDom();
+        resetCurrentLayout();
       });
     }
 
@@ -630,7 +690,7 @@
   // INIZIALIZZAZIONE & ATTIVAZIONE AUTOMATICA SMART
   // ========================================================
   function init() {
-    loadSavedLayout();
+    loadSavedLayouts();
     applyLayoutToDom();
 
     setupDpad();
@@ -657,6 +717,19 @@
       touchEnabled = savedEnabled === "true";
     }
 
+    function updateTouchVisibility() {
+      const isFs = document.body.classList.contains("is-fullscreen") || Boolean(document.fullscreenElement);
+      const isLandscape = detectOrientation() === "landscape";
+      // In orizzontale (landscape) i controlli compaiono SOLO a schermo intero (fullscreen)
+      if (isLandscape && !isFs) {
+        if (overlay) overlay.style.display = "none";
+        return;
+      }
+      if (overlay) {
+        overlay.style.display = touchEnabled ? "block" : "none";
+      }
+    }
+
     function setTouchEnabled(enabled) {
       touchEnabled = enabled;
       localStorage.setItem(STORAGE_KEY_ENABLED, enabled ? "true" : "false");
@@ -664,16 +737,14 @@
       if (btnEdit) {
         btnEdit.style.display = enabled ? "inline-flex" : "none";
       }
-      if (overlay) {
-        overlay.style.display = enabled ? "block" : "none";
-        if (enabled) {
-          applyLayoutToDom();
-        } else if (isEditing) {
-          isEditing = false;
-          unselectAllWidgets();
-          overlay.classList.remove("editing-mode");
-          if (toolbar) toolbar.style.display = "none";
-        }
+      updateTouchVisibility();
+      if (enabled) {
+        applyLayoutToDom();
+      } else if (isEditing) {
+        isEditing = false;
+        unselectAllWidgets();
+        if (overlay) overlay.classList.remove("editing-mode");
+        if (toolbar) toolbar.style.display = "none";
       }
     }
 
@@ -704,7 +775,49 @@
       btnFloatingEdit.addEventListener("click", toggleEditMode);
     }
 
+    function handleScreenStateChange() {
+      const newOrient = detectOrientation();
+      if (newOrient !== activeOrientation) {
+        activeOrientation = newOrient;
+        currentLayout = activeOrientation === "landscape" ? landscapeLayout : portraitLayout;
+        applyLayoutToDom();
+      }
+      updateTouchVisibility();
+    }
+
+    window.addEventListener("resize", handleScreenStateChange);
+    window.addEventListener("orientationchange", handleScreenStateChange);
+    document.addEventListener("fullscreenchange", handleScreenStateChange);
+    document.addEventListener("webkitfullscreenchange", handleScreenStateChange);
+
     setTouchEnabled(touchEnabled);
+
+    // Esportazioni API globali per integrazione con menu fullscreen e drawer impostazioni
+    window.startTouchEdit = () => {
+      if (!touchEnabled) setTouchEnabled(true);
+      isEditing = true;
+      if (overlay) overlay.classList.add("editing-mode");
+      if (toolbar) toolbar.style.display = "flex";
+      unselectAllWidgets();
+      updateToolbarSelection();
+    };
+    window.stopTouchEdit = () => {
+      isEditing = false;
+      unselectAllWidgets();
+      if (overlay) overlay.classList.remove("editing-mode");
+      if (toolbar) toolbar.style.display = "none";
+      saveCurrentLayout();
+    };
+    window.resetTouchLayout = () => {
+      resetCurrentLayout();
+      if (typeof showInGameNotice === "function") {
+        showInGameNotice("[🎮 Touch] Layout ripristinato ai valori predefiniti!", 3000);
+      }
+    };
+    window.isTouchEditing = () => isEditing;
+    window.setTouchControlsEnabled = setTouchEnabled;
+    window.getTouchOrientation = () => activeOrientation;
+    window.updateTouchControlsVisibility = updateTouchVisibility;
   }
 
   if (document.readyState === "loading") {
