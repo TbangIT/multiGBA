@@ -1,4 +1,4 @@
-# mGBA Online - WebRTC P2P (GitHub Pages, senza broker)
+# mGBA- WebRTC P2P (GitHub Pages, senza broker)
 
 Emulatore mGBA nel browser con Link Cable multiplayer **peer-to-peer**, pubblicabile su
 GitHub Pages. In questa versione **non c'e' piu' PeerJS Cloud**: la "segnalazione" iniziale
