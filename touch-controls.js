@@ -57,11 +57,11 @@
     opacity: 0.8,
     widgets: {
       dpad:      { bottom: "25px", left: "25px",  scale: 1.0 },
-      btnL:      { top: "25px",    left: "20px",  scale: 1.0 },
-      btnR:      { top: "25px",    right: "20px", scale: 1.0 },
-      btnB:      { bottom: "35px", right: "95px", scale: 1.0 },
-      btnA:      { bottom: "85px", right: "25px", scale: 1.0 },
-      btnAB:     { bottom: "25px", right: "25px", scale: 1.0 },
+      btnL:      { top: "20px",    left: "20px",  scale: 1.0 },
+      btnR:      { top: "20px",    right: "20px", scale: 1.0 },
+      btnB:      { bottom: "35px", right: "105px", scale: 1.0 },
+      btnA:      { bottom: "90px", right: "25px", scale: 1.0 },
+      btnAB:     { bottom: "25px", right: "25px", scale: 0.9 },
       btnSelect: { bottom: "22px", left: "calc(50% - 95px)", scale: 1.0 },
       btnStart:  { bottom: "22px", left: "calc(50% - 25px)", scale: 1.0 },
       btnSpeed:  { bottom: "22px", left: "calc(50% + 45px)", scale: 1.0 }
@@ -455,14 +455,16 @@
 
       const onStart = (clientX, clientY) => {
         if (!isEditing) return;
+        const overlay = document.getElementById("touchControlsOverlay");
+        const overlayRect = overlay ? overlay.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
         const rect = widget.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) return;
         dragging = true;
         selectWidget(widgetId);
         startX = clientX;
         startY = clientY;
-        initialLeft = rect.left;
-        initialTop = rect.top;
+        initialLeft = rect.left - overlayRect.left;
+        initialTop = rect.top - overlayRect.top;
         widget.style.bottom = "auto";
         widget.style.right = "auto";
         widget.style.left = initialLeft + "px";
@@ -472,6 +474,7 @@
 
       const onMove = (clientX, clientY) => {
         if (!dragging || !isEditing) return;
+        const overlay = document.getElementById("touchControlsOverlay");
         const dx = clientX - startX;
         const dy = clientY - startY;
 
@@ -479,8 +482,8 @@
         let newTop = initialTop + dy;
 
         const rect = widget.getBoundingClientRect();
-        const maxLeft = window.innerWidth - rect.width;
-        const maxTop = window.innerHeight - rect.height;
+        const maxLeft = (overlay ? overlay.clientWidth : window.innerWidth) - rect.width;
+        const maxTop = (overlay ? overlay.clientHeight : window.innerHeight) - rect.height;
 
         newLeft = Math.max(0, Math.min(newLeft, maxLeft));
         newTop = Math.max(0, Math.min(newTop, maxTop));
