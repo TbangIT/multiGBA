@@ -36,6 +36,16 @@ const RebitMqtt = (() => {
       this.onState && this.onState({ state: "up", url: this.urls[idx], idx });
     }
     send(topic, kind, payload, qos) {
+      if (kind === K.BIN && this.room && this.room.fastKey) {
+        // Canale sincrono a bassissima latenza per input e ping (0 ms Promise overhead, invio immediato al WebSocket)
+        if (!this.client || !this.client.connected || this.closed) return;
+        const frs = C.frames(kind, this.myId, payload);
+        for (const fr of frs) {
+          const sealed = C.fastSeal(this.room.fastKey, fr);
+          this.client.publish(topic, sealed, { qos: 0 });
+        }
+        return;
+      }
       if (kind === K.BIN && this.txDepth > 4) return;   // coda cifratura piena: l'input successivo porta comunque la storia
       const frs = C.frames(kind, this.myId, payload);
       this.txDepth++;
@@ -46,8 +56,20 @@ const RebitMqtt = (() => {
         }
       }).catch(() => {}).then(() => { this.txDepth--; });
     }
-    _rx(topic, payload) {   // catena di promise: decifratura asincrona ma consegna IN ORDINE
+    _rx(topic, payload) {
       const bytes = C.toU8(payload);
+      if (bytes.length > 1 && bytes[0] === 0xFB && this.room && this.room.fastKey) {
+        // Ricezione sincrona immediata per frame binari (K.BIN): 0 microtask delay
+        try {
+          const pt = C.fastOpen(this.room.fastKey, bytes);
+          const p = C.parse(pt);
+          if (p.from === this.myId) return;
+          const full = this.reasm.add(p);
+          if (full) this.onFrame(p.kind, p.from, full, topic);
+        } catch (_) {}
+        return;
+      }
+      // Messaggi di controllo (K.CTRL): decifratura asincrona ordinata AES-GCM
       this.rx = this.rx.then(async () => {
         let pt; try { pt = await C.open(this.room.key, bytes); } catch (_) { return; }   // chiave diversa o messaggio manomesso
         const p = C.parse(pt); if (p.from === this.myId) return;
