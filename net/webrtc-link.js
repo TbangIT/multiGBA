@@ -1,27 +1,72 @@
 // WebRTC (PeerJS): configurazione ICE e canale dati "veloce" per input/ping.
 // Usa variabili di app.js solo a runtime (netFastBroken, myPlayerId, connectedGuests, activeP2PConn).
 
-// STUN pubblici: bastano per le reti normali. I TURN gratuiti senza registrazione sono ormai inattivi/inaffidabili:
-// con NAT simmetrici e hotspot mobili si passa al relay MQTT (net/mqtt-link.js).
-const P2P_ICE_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "stun:stun2.l.google.com:19302" },
-  { urls: "stun:stun3.l.google.com:19302" },
-  { urls: "stun:stun4.l.google.com:19302" },
-  { urls: "stun:global.stun.twilio.com:3478" },
-  { urls: "stun:stun.cloudflare.com:3478" },
-  // Free public TURN relay servers for fallback across NATs, 4G/5G, and restrictive firewalls
-  {
-    urls: [
-      "turn:openrelay.metered.ca:80",
-      "turn:openrelay.metered.ca:443",
-      "turn:openrelay.metered.ca:443?transport=tcp"
-    ],
-    username: "openrelayproject",
-    credential: "openrelayproject"
+// STUN pubblici ad alta disponibilita' per reti standard + supporto TURN dinamico per NAT simmetrici e hotspot mobili.
+function getEffectiveIceServers() {
+  const servers = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun.cloudflare.com:3478" },
+    { urls: "stun:global.stun.twilio.com:3478" },
+  ];
+
+  // 1. Override da window o localStorage
+  let customTurn = window.REBIT_TURN_SERVERS;
+  if (!customTurn) {
+    try {
+      const stored = localStorage.getItem("rebit_turn_config");
+      if (stored) customTurn = JSON.parse(stored);
+    } catch (_) {}
   }
-];
+
+  // 2. Override da parametro URL (?turn=turn:user:pass@host:port o ?turn=urls;user;pass)
+  if (!customTurn && typeof location !== "undefined") {
+    const m = /[?&]turn=([^&]+)/.exec(location.search);
+    if (m) {
+      try {
+        const val = decodeURIComponent(m[1]);
+        if (val.startsWith("turn:") || val.startsWith("turns:")) {
+          const atIdx = val.indexOf("@");
+          if (atIdx > 0) {
+            const protoAndAuth = val.slice(0, atIdx);
+            const hostPart = val.slice(atIdx + 1);
+            const colonIdx = protoAndAuth.indexOf(":");
+            const proto = protoAndAuth.slice(0, colonIdx);
+            const auth = protoAndAuth.slice(colonIdx + 1);
+            const [user, pass] = auth.split(":");
+            customTurn = [{ urls: `${proto}:${hostPart}`, username: user, credential: pass }];
+          } else {
+            customTurn = [{ urls: val }];
+          }
+        } else if (val.startsWith("{") || val.startsWith("[")) {
+          customTurn = JSON.parse(val);
+        }
+      } catch (e) {
+        console.warn("[WebRTC] Errore parsing param ?turn:", e);
+      }
+    }
+  }
+
+  if (customTurn) {
+    if (Array.isArray(customTurn)) servers.push(...customTurn);
+    else servers.push(customTurn);
+  }
+  return servers;
+}
+
+const P2P_ICE_SERVERS = getEffectiveIceServers();
+
+window.rebitSetTurnServer = (urls, username, credential) => {
+  const cfg = { urls, username, credential };
+  localStorage.setItem("rebit_turn_config", JSON.stringify(cfg));
+  console.log("[WebRTC] Server TURN salvato nel localStorage:", cfg);
+  return cfg;
+};
+window.rebitClearTurnServer = () => {
+  localStorage.removeItem("rebit_turn_config");
+  console.log("[WebRTC] Server TURN personalizzato rimosso.");
+};
 
 // Canale dati "veloce" (input + ping): non ordinato, zero ritrasmissioni. Il canale PeerJS e' ordinato+affidabile:
 // un solo pacchetto perso blocca TUTTI i successivi per >=200 ms (head-of-line blocking) => stallo => overlay.
@@ -55,4 +100,3 @@ function netSend(conn, buf) {
   if (!netFastBroken && dc && dc.readyState === "open") { try { dc.send(buf); return; } catch (e) {} }
   if (conn.open) { try { conn.send(buf); } catch (e) {} }
 }
-
