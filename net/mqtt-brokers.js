@@ -1,7 +1,7 @@
 // Relay MQTT - elenco broker pubblici, connessione con timeout e misura della latenza reale (eco).
 // Nessuna registrazione: sono broker pubblici condivisi. Per questo i messaggi sono cifrati (mqtt-codec.js).
-// Override: ?mqtt=wss://mio-broker:8084/mqtt,ws://altro:8083   oppure   window.REBIT_MQTT_BROKERS = [...]
-const RebitMqttBrokers = (() => {
+// Override: ?mqtt=wss://mio-broker:8084/mqtt,ws://altro:8083   oppure   window.MULTIGBA_MQTT_BROKERS = [...]
+const MultiGbaMqttBrokers = (() => {
   // L'ORDINE conta: e' l'ordine di failover uguale per tutti i giocatori (ognuno passa al successivo nello stesso modo).
   const DEFAULTS = [
     "wss://broker.emqx.io:8084/mqtt",
@@ -14,15 +14,15 @@ const RebitMqttBrokers = (() => {
     const m = /[?&]mqtt=([^&]+)/.exec(location.search);
     if (m) return decodeURIComponent(m[1]).split(",").map((s) => s.trim()).filter(Boolean);
     let stored = null;
-    try { stored = localStorage.getItem("rebit_custom_mqtt"); } catch (_) {}
+    try { stored = localStorage.getItem("multigba_custom_mqtt") || localStorage.getItem("rebit_custom_mqtt"); } catch (_) {}
     if (stored) return stored.split(",").map((s) => s.trim()).filter(Boolean);
-    return (window.REBIT_MQTT_BROKERS || DEFAULTS).slice();
+    return (window.MULTIGBA_MQTT_BROKERS || window.REBIT_MQTT_BROKERS || DEFAULTS).slice();
   }
   function opts(extra) {
     return Object.assign({
       protocolVersion: 4, clean: true, keepalive: 30, reconnectPeriod: 1000, connectTimeout: 6000,
       resubscribe: true, queueQoSZero: false,   // un input vecchio accodato offline e' peggio di un input perso
-    }, window.REBIT_MQTT_OPTS || {}, extra || {});
+    }, window.MULTIGBA_MQTT_OPTS || window.REBIT_MQTT_OPTS || {}, extra || {});
   }
   // Connessione con timeout. Dopo 'connect' la gestione degli errori passa alla sessione.
   function connect(url, extra, timeoutMs) {
@@ -37,7 +37,7 @@ const RebitMqttBrokers = (() => {
   }
   // Latenza reale client->broker->client (mediana di n eco su un topic privato).
   async function rtt(client, n) {
-    const topic = "rebit-gba/v1/probe/" + rid(), times = []; let wake = null;
+    const topic = "multigba/v1/probe/" + rid(), times = []; let wake = null;
     const onMsg = (t) => { if (t === topic && wake) wake(true); };
     client.on("message", onMsg);
     try {
@@ -55,7 +55,7 @@ const RebitMqttBrokers = (() => {
   // Prova TUTTI i broker in parallelo: {ok: [{url,i,client,rtt}] dal piu' veloce, bad: [{url,error}]}
   async function rank(urls, timeoutMs) {
     const all = await Promise.all(urls.map(async (url, i) => {
-      try { const client = await connect(url, { clientId: "rbp" + rid() }, timeoutMs); return { url, i, client, rtt: await rtt(client, 3) }; }
+      try { const client = await connect(url, { clientId: "mgba" + rid() }, timeoutMs); return { url, i, client, rtt: await rtt(client, 3) }; }
       catch (e) { return { url, i, error: String(e.message || e) }; }
     }));
     const ok = all.filter((x) => x.client && isFinite(x.rtt)).sort((a, b) => a.rtt - b.rtt);
@@ -64,3 +64,5 @@ const RebitMqttBrokers = (() => {
   }
   return { list, connect, rtt, rank, rid };
 })();
+window.MultiGbaMqttBrokers = MultiGbaMqttBrokers;
+window.RebitMqttBrokers = MultiGbaMqttBrokers;
