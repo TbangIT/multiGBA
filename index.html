@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rebit GBA Online - WebRTC P2P Netplay (GitHub Pages Edition)</title>
-  <link rel="stylesheet" href="style.css?v=2.3">
+  <title>multiGBA Online - WebRTC P2P Netplay</title>
+  <link rel="stylesheet" href="style.css?v=2.4">
   <script src="peerjs.min.js"></script>
   <script src="cores/mgba_dual.js"></script>
-  <script src="touch-controls.js?v=2.3"></script>
+  <script src="touch-controls.js?v=2.4"></script>
 </head>
 <body>
   <header class="topbar-fixed">
@@ -15,7 +15,7 @@
     <div class="topbar-section topbar-left header-left">
       <div class="topbar-brand logo-area">
         <span class="logo-dot" id="brandLiveDot"></span>
-        <h1 class="brand-title">Rebit GBA</h1>
+        <h1 class="brand-title">multiGBA</h1>
       </div>
       <div class="badge-capsule status-bar">
         <div class="badge" id="romBadge">ROM: Inizializzazione...</div>
@@ -33,17 +33,17 @@
         <!-- Quick ROM Loader -->
         <input type="file" id="inputRomFile" accept=".gba" style="display: none;">
         <button class="btn-header nav-btn" id="btnLoadRom" title="Carica una ROM Game Boy Advance (.gba)">
-          [📁 ROM]
+          [📁<span class="btn-label"> ROM</span>]
         </button>
 
         <!-- Quick Play/Pause -->
         <button class="btn-header nav-btn btn-primary" id="btnPlayPause" title="Metti in pausa o riprendi l'emulazione">
-          [▶ Gioca]
+          [▶<span class="btn-label"> Gioca</span>]
         </button>
 
         <!-- Quick Audio Toggle -->
         <button class="btn-header nav-btn" id="btnAudioToggle" title="Attiva/Disattiva audio">
-          [🔊 Audio]
+          [🔊<span class="btn-label"> Audio</span>]
         </button>
 
         <!-- Pulsante Modalità Teatro rimosso dalla UI ma mantenuto hidden nel DOM per compatibilità -->
@@ -51,7 +51,7 @@
 
         <!-- Native OS Fullscreen Toggle -->
         <button class="btn-header nav-btn" id="btnFullscreenToggle" title="Attiva Schermo Intero OS">
-          [⛶ Tutto Schermo]
+          [⛶<span class="btn-label"> Tutto Schermo</span>]
         </button>
       </div>
     </div>
@@ -61,17 +61,17 @@
       <!-- Touch Controls Toggle -->
       <label class="toggle-control btn-header-touch" id="lblTouchControlsToggle" title="Mostra/Nascondi Controlli Touch a schermo">
         <input type="checkbox" id="chkTouchControls">
-        <span>[📱 Touch]</span>
+        <span>[📱<span class="btn-label"> Touch</span>]</span>
       </label>
 
       <!-- Online Netplay Link Cable Trigger -->
       <button class="btn-header highlight btn-netplay" id="btnOpenNetplayModal" title="Apri Cavo Link P2P Multiplayer">
-        [🌐 Cavo Link]
+        [🌐<span class="btn-label"> Cavo Link</span>]
       </button>
 
       <!-- Open Settings Drawer -->
       <button class="btn-header btn-settings" id="btnOpenSettings" title="Apri Impostazioni ed Opzioni">
-        [⚙ Impostazioni]
+        [⚙<span class="btn-label"> Impostazioni</span>]
       </button>
     </div>
   </header>
@@ -333,7 +333,7 @@
     </div>
   </div>
 
-  <!-- Rebit-Style Link Cable Online Modal (WebRTC P2P Edition) -->
+  <!-- multiGBA Link Cable Online Modal (WebRTC P2P Edition) -->
   <div class="modal-backdrop" id="netplayModal" style="display: none;">
     <div class="modal-card">
       <div class="modal-header">
@@ -553,7 +553,7 @@
 
         <!-- Presets -->
         <div style="display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap;">
-          <button id="presetRebit" style="font-size: 12px; padding: 4px 8px;">Frecce + Z/X (Backup WASD)</button>
+          <button id="presetMultiGba" style="font-size: 12px; padding: 4px 8px;">Frecce + Z/X (Backup WASD)</button>
           <button id="presetWasd" style="font-size: 12px; padding: 4px 8px;">WASD + J/K (Backup Frecce)</button>
           <button id="presetNumpad" style="font-size: 12px; padding: 4px 8px;">Tastierino (8456)</button>
           <button id="presetReset" style="font-size: 12px; padding: 4px 8px; background: #3f3f46;">Default</button>
@@ -565,7 +565,7 @@
         </div>
 
         <div class="keybindings-info" style="display: block; margin-top: 10px; padding: 10px; background: #18181b; border: 1px solid #3f3f46; border-radius: 8px;">
-          <div style="font-weight: 600; color: #f4f4f5; margin-bottom: 6px; font-size: 12.5px;">Comandi Predefiniti (Layout Rebit):</div>
+          <div style="font-weight: 600; color: #f4f4f5; margin-bottom: 6px; font-size: 12.5px;">Comandi Predefiniti (Layout multiGBA):</div>
           <div class="key-grid">
             <div class="key-item"><span>D-Pad (Movimento)</span> <span><kbd>&uarr;</kbd> <kbd>&darr;</kbd> <kbd>&larr;</kbd> <kbd>&rarr;</kbd></span></div>
             <div class="key-item"><span>Pulsante A (Conferma)</span> <span><kbd>Z</kbd> / <kbd>J</kbd></span></div>
