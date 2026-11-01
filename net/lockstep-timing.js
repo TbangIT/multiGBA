@@ -125,11 +125,29 @@ function netNoteStall(now) {
 
 function netUpdateBadge() {
   const el = document.getElementById("netBadge");
-  if (!el) return;
-  if (currentMode !== "netplay" || !netplayConnected) { el.style.display = "none"; return; }
-  el.style.display = "";
-  const ping = netRttSamples ? `${Math.round(netRttMs)} ms` : "...";
-  el.textContent = `Ping ${ping} | Lag ${Math.round(netInputDelay * netFrameMs())} ms (${netInputDelay}f) | CPU ${Math.round(netCpuLoad * 100)}%`;
+  const hudNet = document.getElementById("canvasHudNet");
+  const canvasNetText = document.getElementById("canvasNetText");
+  const isNetActive = currentMode === "netplay" && netplayConnected;
+
+  if (el) {
+    if (!isNetActive) {
+      el.style.display = "none";
+    } else {
+      el.style.display = "";
+      const ping = netRttSamples ? `${Math.round(netRttMs)} ms` : "...";
+      el.textContent = `Ping ${ping} | Lag ${Math.round(netInputDelay * netFrameMs())} ms (${netInputDelay}f) | CPU ${Math.round(netCpuLoad * 100)}%`;
+    }
+  }
+
+  if (hudNet && canvasNetText) {
+    if (!isNetActive) {
+      hudNet.style.display = "none";
+    } else {
+      hudNet.style.display = "inline-flex";
+      const ping = netRttSamples ? `${Math.round(netRttMs)}ms` : "...";
+      canvasNetText.textContent = `Ping ${ping} | Lag ${Math.round(netInputDelay * netFrameMs())}ms`;
+    }
+  }
 }
 
 function netPacketIsPing(buf) {
