@@ -18,8 +18,12 @@
   const STORAGE_KEY_LANDSCAPE = "multigba_touch_layout_landscape_v2";
   const STORAGE_KEY_LEGACY = "multigba_touch_layout_v1";
   const STORAGE_KEY_ENABLED = "multigba_touch_enabled";
+  const STORAGE_KEY_DPAD_4WAY = "multigba_touch_dpad_4way";
 
-  // Mappatura bitmask GBA
+  let dpad4WayOnly = false;
+  try {
+    dpad4WayOnly = localStorage.getItem(STORAGE_KEY_DPAD_4WAY) === "true";
+  } catch (e) {}
   const GBA = {
     A: 1 << 0,
     B: 1 << 1,
@@ -306,22 +310,36 @@
         // Angolo in gradi (-180 a +180)
         const angle = Math.atan2(dy, dx) * (180 / Math.PI);
 
-        if (angle >= -157.5 && angle < -112.5) {
-          up = true; left = true;
-        } else if (angle >= -112.5 && angle < -67.5) {
-          up = true;
-        } else if (angle >= -67.5 && angle < -22.5) {
-          up = true; right = true;
-        } else if (angle >= -22.5 && angle < 22.5) {
-          right = true;
-        } else if (angle >= 22.5 && angle < 67.5) {
-          down = true; right = true;
-        } else if (angle >= 67.5 && angle < 112.5) {
-          down = true;
-        } else if (angle >= 112.5 && angle < 157.5) {
-          down = true; left = true;
+        if (dpad4WayOnly) {
+          // Modalità 4 direzioni ortogonali pure (90° per asse cardinale, zero diagonali)
+          if (angle >= -45 && angle < 45) {
+            right = true;
+          } else if (angle >= 45 && angle < 135) {
+            down = true;
+          } else if (angle >= -135 && angle < -45) {
+            up = true;
+          } else {
+            left = true;
+          }
         } else {
-          left = true;
+          // Modalità 8 direzioni standard (con diagonali a 45°)
+          if (angle >= -157.5 && angle < -112.5) {
+            up = true; left = true;
+          } else if (angle >= -112.5 && angle < -67.5) {
+            up = true;
+          } else if (angle >= -67.5 && angle < -22.5) {
+            up = true; right = true;
+          } else if (angle >= -22.5 && angle < 22.5) {
+            right = true;
+          } else if (angle >= 22.5 && angle < 67.5) {
+            down = true; right = true;
+          } else if (angle >= 67.5 && angle < 112.5) {
+            down = true;
+          } else if (angle >= 112.5 && angle < 157.5) {
+            down = true; left = true;
+          } else {
+            left = true;
+          }
         }
       }
 
@@ -700,8 +718,34 @@
     const overlay = document.getElementById("touchControlsOverlay");
     const chkTouch = document.getElementById("chkTouchControls");
     const btnEdit = document.getElementById("btnEditTouchLayout");
-    const btnFloatingEdit = document.getElementById("btnFloatingEditLayout");
     const toolbar = document.getElementById("touchEditToolbar");
+    const chkHudDpad4Way = document.getElementById("chkHudDpad4Way");
+    const chkDrawerDpad4Way = document.getElementById("chkDrawerDpad4Way");
+
+    function setDpad4Way(enabled) {
+      dpad4WayOnly = Boolean(enabled);
+      try {
+        localStorage.setItem(STORAGE_KEY_DPAD_4WAY, dpad4WayOnly ? "true" : "false");
+      } catch (e) {}
+      if (chkHudDpad4Way) chkHudDpad4Way.checked = dpad4WayOnly;
+      if (chkDrawerDpad4Way) chkDrawerDpad4Way.checked = dpad4WayOnly;
+    }
+
+    if (chkHudDpad4Way) {
+      chkHudDpad4Way.checked = dpad4WayOnly;
+      chkHudDpad4Way.addEventListener("change", (e) => {
+        setDpad4Way(e.target.checked);
+      });
+    }
+
+    if (chkDrawerDpad4Way) {
+      chkDrawerDpad4Way.checked = dpad4WayOnly;
+      chkDrawerDpad4Way.addEventListener("change", (e) => {
+        setDpad4Way(e.target.checked);
+      });
+    }
+
+    setDpad4Way(dpad4WayOnly);
 
     // Auto-rilevamento dispositivo mobile/touchscreen
     const isTouchDevice = (
@@ -771,10 +815,6 @@
       btnEdit.addEventListener("click", toggleEditMode);
     }
 
-    if (btnFloatingEdit) {
-      btnFloatingEdit.addEventListener("click", toggleEditMode);
-    }
-
     function handleScreenStateChange() {
       const newOrient = detectOrientation();
       if (newOrient !== activeOrientation) {
@@ -818,6 +858,8 @@
     window.setTouchControlsEnabled = setTouchEnabled;
     window.getTouchOrientation = () => activeOrientation;
     window.updateTouchControlsVisibility = updateTouchVisibility;
+    window.setDpad4Way = setDpad4Way;
+    window.isDpad4Way = () => dpad4WayOnly;
   }
 
   if (document.readyState === "loading") {
