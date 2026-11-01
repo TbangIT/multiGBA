@@ -12,10 +12,10 @@ function getEffectiveIceServers() {
   ];
 
   // 1. Override da window o localStorage
-  let customTurn = window.REBIT_TURN_SERVERS;
+  let customTurn = window.MULTIGBA_TURN_SERVERS || window.REBIT_TURN_SERVERS;
   if (!customTurn) {
     try {
-      const stored = localStorage.getItem("rebit_turn_config");
+      const stored = localStorage.getItem("multigba_turn_config") || localStorage.getItem("rebit_turn_config");
       if (stored) customTurn = JSON.parse(stored);
     } catch (_) {}
   }
@@ -57,16 +57,20 @@ function getEffectiveIceServers() {
 
 const P2P_ICE_SERVERS = getEffectiveIceServers();
 
-window.rebitSetTurnServer = (urls, username, credential) => {
+window.multiGbaSetTurnServer = (urls, username, credential) => {
   const cfg = { urls, username, credential };
-  localStorage.setItem("rebit_turn_config", JSON.stringify(cfg));
+  localStorage.setItem("multigba_turn_config", JSON.stringify(cfg));
   console.log("[WebRTC] Server TURN salvato nel localStorage:", cfg);
   return cfg;
 };
-window.rebitClearTurnServer = () => {
+window.rebitSetTurnServer = window.multiGbaSetTurnServer;
+
+window.multiGbaClearTurnServer = () => {
+  localStorage.removeItem("multigba_turn_config");
   localStorage.removeItem("rebit_turn_config");
   console.log("[WebRTC] Server TURN personalizzato rimosso.");
 };
+window.rebitClearTurnServer = window.multiGbaClearTurnServer;
 
 // Canale dati "veloce" (input + ping): non ordinato, zero ritrasmissioni. Il canale PeerJS e' ordinato+affidabile:
 // un solo pacchetto perso blocca TUTTI i successivi per >=200 ms (head-of-line blocking) => stallo => overlay.
