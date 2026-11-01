@@ -13,6 +13,9 @@ const RebitMqttBrokers = (() => {
   function list() {
     const m = /[?&]mqtt=([^&]+)/.exec(location.search);
     if (m) return decodeURIComponent(m[1]).split(",").map((s) => s.trim()).filter(Boolean);
+    let stored = null;
+    try { stored = localStorage.getItem("rebit_custom_mqtt"); } catch (_) {}
+    if (stored) return stored.split(",").map((s) => s.trim()).filter(Boolean);
     return (window.REBIT_MQTT_BROKERS || DEFAULTS).slice();
   }
   function opts(extra) {
