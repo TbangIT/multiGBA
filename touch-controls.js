@@ -14,9 +14,8 @@
 (function () {
   "use strict";
 
-  const STORAGE_KEY_LAYOUT = "gba_touch_layout_v4";
-  const STORAGE_KEY_LAYOUT_V3 = "gba_touch_layout_v3";
-  const STORAGE_KEY_ENABLED = "gba_touch_enabled";
+  const STORAGE_KEY_LAYOUT = "multigba_touch_layout_v1";
+  const STORAGE_KEY_ENABLED = "multigba_touch_enabled";
 
   // Mappatura bitmask GBA
   const GBA = {
@@ -51,32 +50,37 @@
   let selectedWidgetId = null;
   let activeDpadTouchId = null;
 
-  // Layout predefinito con posizioni ergonomiche per singoli tasti
+  // Layout predefinito con posizioni ergonomiche per singoli tasti (ottimizzato mobile portrait)
   const DEFAULT_LAYOUT = {
     scale: 1.0,
     opacity: 0.8,
     widgets: {
-      dpad:      { bottom: "25px", left: "25px",  scale: 1.0 },
-      btnL:      { top: "20px",    left: "20px",  scale: 1.0 },
-      btnR:      { top: "20px",    right: "20px", scale: 1.0 },
-      btnB:      { bottom: "35px", right: "105px", scale: 1.0 },
-      btnA:      { bottom: "90px", right: "25px", scale: 1.0 },
-      btnAB:     { bottom: "25px", right: "25px", scale: 0.9 },
-      btnSelect: { bottom: "22px", left: "calc(50% - 95px)", scale: 1.0 },
-      btnStart:  { bottom: "22px", left: "calc(50% - 25px)", scale: 1.0 },
-      btnSpeed:  { bottom: "22px", left: "calc(50% + 45px)", scale: 1.0 }
+      dpad:      { bottom: "20px", left: "20px",  scale: 1.0 },
+      btnL:      { top: "12px",    left: "16px",  scale: 1.0 },
+      btnR:      { top: "12px",    right: "16px", scale: 1.0 },
+      btnB:      { bottom: "30px", right: "88px", scale: 1.0 },
+      btnA:      { bottom: "78px", right: "20px", scale: 1.0 },
+      btnAB:     { bottom: "20px", right: "20px", scale: 0.88 },
+      btnSelect: { bottom: "16px", left: "calc(50% - 90px)", scale: 1.0 },
+      btnStart:  { bottom: "16px", left: "calc(50% - 22px)", scale: 1.0 },
+      btnSpeed:  { bottom: "16px", left: "calc(50% + 46px)", scale: 1.0 }
     }
   };
 
   let currentLayout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
 
-  // Valida che una coordinata non sia corrotta o impostata a 0,0 in alto a sinistra
+  // Valida che una coordinata non sia corrotta o impostata a 0,0 in alto a sinistra o fuori dai limiti
   function isValidPosition(pos) {
     if (!pos || typeof pos !== "object") return false;
     const l = String(pos.left || "").trim();
     const t = String(pos.top || "").trim();
     if ((l === "0px" || l === "0") && (t === "0px" || t === "0")) {
       return false;
+    }
+    // Protezione contro vecchie coordinate 'top' in px a schermo intero che spingerebbero i tasti fuori dalla finestra
+    if (t.endsWith("px")) {
+      const topNum = parseFloat(t);
+      if (topNum > 360) return false;
     }
     const hasH = (pos.left && pos.left !== "auto") || (pos.right && pos.right !== "auto");
     const hasV = (pos.top && pos.top !== "auto") || (pos.bottom && pos.bottom !== "auto");
@@ -85,10 +89,7 @@
 
   function loadSavedLayout() {
     try {
-      let saved = localStorage.getItem(STORAGE_KEY_LAYOUT);
-      if (!saved) {
-        saved = localStorage.getItem(STORAGE_KEY_LAYOUT_V3);
-      }
+      const saved = localStorage.getItem(STORAGE_KEY_LAYOUT);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === "object") {
@@ -112,7 +113,6 @@
     try {
       const data = JSON.stringify(currentLayout);
       localStorage.setItem(STORAGE_KEY_LAYOUT, data);
-      localStorage.setItem(STORAGE_KEY_LAYOUT_V3, data);
     } catch (e) {
       console.warn("[Touch] Errore salvataggio layout:", e);
     }
