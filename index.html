@@ -11,23 +11,23 @@
 </head>
 <body>
   <header class="topbar-fixed">
-    <!-- Sezione Sinistra (Brand & Status) -->
+    <!-- Sezione Sinistra (Brand Logo & Compact Status) -->
     <div class="topbar-section topbar-left header-left">
       <div class="topbar-brand logo-area">
-        <span class="logo-badge">P2P LINK</span>
+        <span class="logo-dot" id="brandLiveDot"></span>
         <h1 class="brand-title">Rebit GBA</h1>
       </div>
       <div class="badge-capsule status-bar">
         <div class="badge" id="romBadge">ROM: Inizializzazione...</div>
-        <div class="badge active" id="fpsBadge"><span class="indicator"></span> 0 FPS</div>
-        <div class="badge" id="modeBadge">Modalita: Singolo (P1)</div>
+        <div class="badge active" id="fpsBadge" style="display:none"><span class="indicator"></span> 0 FPS</div>
+        <div class="badge" id="modeBadge">Singolo (P1)</div>
         <div class="badge" id="netBadge" style="display:none" title="Ping reale e anticipo input (frame)">Ping ...</div>
-        <div class="badge" id="speedBadge" style="display:none">Velocita: 1x (60 FPS)</div>
+        <div class="badge" id="speedBadge" style="display:none">1x (60 FPS)</div>
         <div class="badge" id="saveBadge" style="display:none">Salvataggio: Nessuno</div>
       </div>
     </div>
 
-    <!-- Sezione Centro (Navbar Gioco Coesa) -->
+    <!-- Sezione Centro (Azioni Primarie di Gioco) -->
     <div class="topbar-section topbar-center">
       <div class="nav-btn-group">
         <!-- Quick ROM Loader -->
@@ -38,7 +38,7 @@
 
         <!-- Quick Play/Pause -->
         <button class="btn-header nav-btn btn-primary" id="btnPlayPause" title="Metti in pausa o riprendi l'emulazione">
-          [▶/|| Gioca]
+          [▶ Gioca]
         </button>
 
         <!-- Quick Audio Toggle -->
@@ -46,10 +46,8 @@
           [🔊 Audio]
         </button>
 
-        <!-- Theater Window Toggle -->
-        <button class="btn-header nav-btn" id="btnTheaterToggle" title="Ingrandisci a Finestra (Modalità Teatro)">
-          [🗖 Finestra]
-        </button>
+        <!-- Pulsante Modalità Teatro rimosso dalla UI ma mantenuto hidden nel DOM per compatibilità -->
+        <button id="btnTheaterToggle" style="display: none !important;" aria-hidden="true">[🗖 Finestra]</button>
 
         <!-- Native OS Fullscreen Toggle -->
         <button class="btn-header nav-btn" id="btnFullscreenToggle" title="Attiva Schermo Intero OS">
@@ -80,6 +78,27 @@
 
   <main>
     <div class="screen-container" id="screenWrapper">
+      <!-- In-Canvas Top-Left Stats HUD (FPS & Ping) -->
+      <div class="canvas-hud-topleft" id="canvasStatsHud">
+        <div class="canvas-hud-badge" id="canvasHudFps">
+          <span class="hud-dot"></span>
+          <span id="canvasFpsText">60 FPS</span>
+        </div>
+        <div class="canvas-hud-badge" id="canvasHudNet" style="display: none;">
+          <span id="canvasNetText">Ping ...</span>
+        </div>
+      </div>
+
+      <!-- In-Canvas Bottom-Right Quick Controls HUD (Fast-Forward 2x & Fullscreen) -->
+      <div class="canvas-hud-bottomright" id="canvasControlsHud">
+        <button id="btnCanvasSpeed" class="canvas-hud-pill" title="Alterna velocità di gioco 1x / 2x">
+          <span id="canvasSpeedText">1x</span>
+        </button>
+        <button id="btnCanvasFullscreen" class="canvas-hud-pill" title="Attiva Schermo Intero">
+          ⛶
+        </button>
+      </div>
+
       <!-- Floating Game HUD (A comparsa in Fullscreen su hover o tocco) -->
       <div id="floatingGameHud" class="floating-game-hud" style="display: none;">
         <button id="btnHudFullscreenExit" class="hud-btn" title="Esci da Schermo Intero">[⛶ Esci Fullscreen]</button>
@@ -121,20 +140,6 @@
         <div id="loadingDetail" style="font-size: 12px; color: #a1a1aa;">Caricamento ROM in corso...</div>
       </div>
     </div>
-
-    <!-- Keybindings Guide -->
-    <div class="keybindings-info">
-      <div style="font-weight: 600; color: #f4f4f5; margin-bottom: 4px;">Comandi Tastiera GBA (Layout Rebit):</div>
-      <div class="key-grid">
-        <div class="key-item"><span>D-Pad (Movimento)</span> <span><kbd>&uarr;</kbd> <kbd>&darr;</kbd> <kbd>&larr;</kbd> <kbd>&rarr;</kbd></span></div>
-        <div class="key-item"><span>Pulsante A (Conferma)</span> <span><kbd>Z</kbd> oppure <kbd>J</kbd></span></div>
-        <div class="key-item"><span>Pulsante B (Annulla)</span> <span><kbd>X</kbd> oppure <kbd>K</kbd></span></div>
-        <div class="key-item"><span>Pulsante START</span> <span><kbd>Enter</kbd></span></div>
-        <div class="key-item"><span>Pulsante SELECT</span> <span><kbd>Shift</kbd> / <kbd>Backspace</kbd></span></div>
-        <div class="key-item"><span>Dorsali L / R</span> <span><kbd>A</kbd> / <kbd>S</kbd></span></div>
-        <div class="key-item"><span>Fast-Forward (2x Speed)</span> <span><kbd>Spazio</kbd></span></div>
-      </div>
-    </div>
   </main>
 
   <!-- Settings Drawer Backdrop -->
@@ -174,11 +179,18 @@
         <h3 class="settings-section-title">🎮 Controlli &amp; Layout</h3>
         <div class="settings-section-grid">
           <button id="btnOpenKeybindsModal" class="btn-drawer">
-            [⌨] Comandi Tastiera
+            [⌨] Configura Tastiera
           </button>
           <button id="btnEditTouchLayout" class="btn-drawer btn-touch-edit" style="display: none;" title="Modifica la posizione e la dimensione di ogni tasto touch">
-            [✥ Sposta/Personalizza Layout]
+            [✥ Sposta/Personalizza Layout Touch]
           </button>
+          <div class="keybindings-drawer-card" style="background: rgba(24, 24, 27, 0.7); border: 1px solid #3f3f46; border-radius: 6px; padding: 10px; font-size: 11.5px; line-height: 1.5;">
+            <div style="font-weight: 700; color: #a5b4fc; text-transform: uppercase; font-size: 10.5px; margin-bottom: 4px;">Comandi Rapidi GBA:</div>
+            <div>• <b>D-Pad</b>: Frecce Direzionali</div>
+            <div>• <b>A / B</b>: Z, J / X, K</div>
+            <div>• <b>START / SELECT</b>: Invio / Backspace</div>
+            <div>• <b>L / R</b>: A / S | <b>Turbo 2x</b>: Spazio</div>
+          </div>
         </div>
       </section>
 
@@ -206,6 +218,10 @@
       <section class="settings-section">
         <h3 class="settings-section-title">🔧 Avanzate &amp; Debug</h3>
         <div class="settings-section-grid">
+          <label class="toggle-control" id="lblToggleStatsHud" title="Mostra o nascondi le statistiche sovraimpresse sullo schermo (FPS, Ping)">
+            <input type="checkbox" id="chkToggleStatsHud" checked>
+            <span>[📊] Mostra Statistiche HUD a schermo</span>
+          </label>
           <label class="toggle-control" id="lblPauseOnBackground" title="Pausa la simulazione quando la finestra perde il focus (utile per debug)">
             <input type="checkbox" id="chkPauseOnBackground">
             <span>[||] Pausa se in background (Debug)</span>
@@ -544,8 +560,21 @@
         </div>
 
         <!-- Keybind list container -->
-        <div id="keybindContainer" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; max-height: 380px; overflow-y: auto;">
+        <div id="keybindContainer" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; max-height: 280px; overflow-y: auto;">
           <!-- Dynamically populated rows -->
+        </div>
+
+        <div class="keybindings-info" style="display: block; margin-top: 10px; padding: 10px; background: #18181b; border: 1px solid #3f3f46; border-radius: 8px;">
+          <div style="font-weight: 600; color: #f4f4f5; margin-bottom: 6px; font-size: 12.5px;">Comandi Predefiniti (Layout Rebit):</div>
+          <div class="key-grid">
+            <div class="key-item"><span>D-Pad (Movimento)</span> <span><kbd>&uarr;</kbd> <kbd>&darr;</kbd> <kbd>&larr;</kbd> <kbd>&rarr;</kbd></span></div>
+            <div class="key-item"><span>Pulsante A (Conferma)</span> <span><kbd>Z</kbd> / <kbd>J</kbd></span></div>
+            <div class="key-item"><span>Pulsante B (Annulla)</span> <span><kbd>X</kbd> / <kbd>K</kbd></span></div>
+            <div class="key-item"><span>Pulsante START</span> <span><kbd>Enter</kbd></span></div>
+            <div class="key-item"><span>Pulsante SELECT</span> <span><kbd>Shift</kbd> / <kbd>Backspace</kbd></span></div>
+            <div class="key-item"><span>Dorsali L / R</span> <span><kbd>A</kbd> / <kbd>S</kbd></span></div>
+            <div class="key-item"><span>Fast-Forward (2x Speed)</span> <span><kbd>Spazio</kbd></span></div>
+          </div>
         </div>
       </div>
     </div>
