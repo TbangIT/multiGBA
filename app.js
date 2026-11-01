@@ -1,4 +1,4 @@
-// Rebit mGBA Online - WebRTC P2P Netplay Driver (GitHub Pages Edition)
+// multiGBA Online - WebRTC P2P Netplay Driver (GitHub Pages Edition)
 // Full implementation with Save Management (.sav / SRAM) and 2-Player Link Cable via direct WebRTC DataChannel (PeerJS + STUN/TURN).
 
 window.Module = null;
@@ -2107,8 +2107,9 @@ let p2pHandshakeTimer = null;
 let guestJoinTimeoutTimer = null;
 let guestFallbackFn = null, mqttFallbackTimer = null;   // riserva MQTT lato guest (vedi net/mqtt-link.js)
 let hostStatusBase = "", hostMqttNote = "";
-const MQTT_FALLBACK_AFTER_MS = window.REBIT_MQTT_FALLBACK_MS || 6000;   // se WebRTC non e' aperto entro 6 s si prova MQTT
-const hasMqtt = () => typeof RebitMqtt !== "undefined" && RebitMqtt.available();
+const MQTT_FALLBACK_AFTER_MS = window.MULTIGBA_MQTT_FALLBACK_MS || window.REBIT_MQTT_FALLBACK_MS || 6000;   // se WebRTC non e' aperto entro 6 s si prova MQTT
+const hasMqtt = () => (typeof MultiGbaMqtt !== "undefined" && MultiGbaMqtt.available()) || (typeof RebitMqtt !== "undefined" && RebitMqtt.available());
+const mqttLink = () => (typeof MultiGbaMqtt !== "undefined" ? MultiGbaMqtt : RebitMqtt);
 
 function stopP2PHandshakeTimer() {
   if (p2pHandshakeTimer) {
@@ -3210,9 +3211,9 @@ function applyKeybindPreset(preset) {
   renderKeybindsUI();
 }
 
-const presetRebit = document.getElementById("presetRebit");
-if (presetRebit) {
-  presetRebit.addEventListener("click", () => {
+const presetMultiGba = document.getElementById("presetMultiGba") || document.getElementById("presetRebit");
+if (presetMultiGba) {
+  presetMultiGba.addEventListener("click", () => {
     applyKeybindPreset({
       UP: { primary: "ArrowUp", secondary: "KeyW" },
       DOWN: { primary: "ArrowDown", secondary: "KeyS" },
@@ -3348,7 +3349,7 @@ function extractRoomCode(input) {
 }
 
 function closeP2PLink() {
-  if (typeof RebitMqtt !== "undefined") RebitMqtt.closeAll();
+  if (hasMqtt()) mqttLink().closeAll();
   stopP2PHandshakeTimer();
   clearGuestJoinTimeout();
   if (activeP2PConn) {
@@ -3409,8 +3410,8 @@ function cancelHosting() {
     try { peer.destroy(); } catch (e) {}
     peer = null;
   }
-  if (typeof RebitMqtt !== "undefined" && typeof RebitMqtt.hostStop === "function") {
-    try { RebitMqtt.hostStop(); } catch (e) {}
+  if (hasMqtt() && typeof mqttLink().hostStop === "function") {
+    try { mqttLink().hostStop(); } catch (e) {}
   }
   if (activeP2PConn) {
     try { activeP2PConn.close(); } catch (e) {}
@@ -3510,14 +3511,14 @@ btnStartHosting.addEventListener("click", () => {
 
   const roomNum = Math.floor(1000 + Math.random() * 9000);
   currentRoomCode = `GBA-${roomNum}`;
-  const peerId = `rebit-gba-${roomNum}`;
+  const peerId = `multigba-${roomNum}`;
 
   btnStartHosting.style.display = "none";
   hostWaitingArea.style.display = "block";
   document.body.classList.add("in-netplay");
   if (generatedRoomCode) generatedRoomCode.innerText = currentRoomCode;
   hostStatusBase = "Registrazione stanza online in corso..."; hostMqttNote = "";
-  if (typeof RebitMqtt !== "undefined") RebitMqtt.closeAll();
+  if (hasMqtt()) mqttLink().closeAll();
   renderHostStatus();
 
   connectedGuests = {};
@@ -3548,7 +3549,7 @@ btnStartHosting.addEventListener("click", () => {
     peer.on("connection", onHostIncomingConn);
 
     if (hasMqtt()) {   // riserva: stessa stanza raggiungibile via relay MQTT (WebRTC resta il percorso preferito)
-      RebitMqtt.hostStart(currentRoomCode, onHostIncomingConn, mqttHostStatus)
+      mqttLink().hostStart(currentRoomCode, onHostIncomingConn, mqttHostStatus)
         .catch((e) => { console.warn("[Host] MQTT non disponibile:", e && e.message); hostMqttNote = "Riserva MQTT non disponibile"; renderHostStatus(); });
     }
 
@@ -3657,7 +3658,7 @@ btnJoinExistingRoom.addEventListener("click", () => {
     showInGameNotice("[AVVISO] Codice stanza non valido. Esempio: GBA-4821", 4000);
     return;
   }
-  const targetPeerId = `rebit-gba-${normalizedNum}`;
+  const targetPeerId = `multigba-${normalizedNum}`;
   const displayCode = `GBA-${normalizedNum.toUpperCase()}`;
 
   const clientSessionToken = "gst_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
@@ -3679,7 +3680,7 @@ btnJoinExistingRoom.addEventListener("click", () => {
     mqttRunning = true;
     console.warn(`[Guest] WebRTC non riesce (${reason}): provo il relay MQTT`);
     joinStatusNotice.innerText = "Connessione diretta non riuscita (NAT/hotspot?): provo il relay MQTT...";
-    RebitMqtt.guestJoin(displayCode, (st) => {
+    mqttLink().guestJoin(displayCode, (st) => {
       if (st.phase === "connecting") joinStatusNotice.innerText = `Relay MQTT: collegamento a ${st.brokers} broker...`;
       else if (st.phase === "connected") joinStatusNotice.innerText = "Relay MQTT: broker raggiunto, cerco l'Host...";
     }, 22000, clientSessionToken).then((mconn) => {
@@ -4231,7 +4232,7 @@ if (btnCanvasFsEl) {
 const chkStatsHud = document.getElementById("chkToggleStatsHud");
 const canvasStatsHud = document.getElementById("canvasStatsHud");
 if (chkStatsHud && canvasStatsHud) {
-  const savedStats = localStorage.getItem("rebit_show_hud_stats");
+  const savedStats = localStorage.getItem("multigba_show_hud_stats") || localStorage.getItem("rebit_show_hud_stats");
   if (savedStats !== null) {
     const show = savedStats === "true";
     chkStatsHud.checked = show;
@@ -4240,7 +4241,7 @@ if (chkStatsHud && canvasStatsHud) {
   chkStatsHud.addEventListener("change", (e) => {
     const show = e.target.checked;
     canvasStatsHud.style.display = show ? "flex" : "none";
-    localStorage.setItem("rebit_show_hud_stats", show ? "true" : "false");
+    localStorage.setItem("multigba_show_hud_stats", show ? "true" : "false");
   });
 }
 
