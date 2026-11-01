@@ -592,31 +592,40 @@ kbd {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.75);
-  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
-  padding: 16px;
+  z-index: 99999;
+  padding: 12px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  box-sizing: border-box;
 }
 
 .modal-card {
   background: #18181b;
-  border: 1px solid #3f3f46;
+  border: 1px solid #4f46e5;
   border-radius: 16px;
   width: 100%;
   max-width: 520px;
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+  max-height: calc(100dvh - 24px);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.9), 0 0 20px rgba(99, 102, 241, 0.2);
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 .modal-header {
-  padding: 16px 20px;
+  padding: 14px 18px;
   border-bottom: 1px solid #27272a;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-shrink: 0;
 }
 
 .modal-header h2 {
@@ -642,6 +651,7 @@ kbd {
   display: flex;
   border-bottom: 1px solid #27272a;
   background: #141416;
+  flex-shrink: 0;
 }
 
 .tab-btn {
@@ -663,7 +673,11 @@ kbd {
 }
 
 .modal-body {
-  padding: 20px;
+  padding: 16px 18px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  flex: 1 1 auto;
+  max-height: calc(100dvh - 120px);
 }
 
 .form-group {
@@ -1661,13 +1675,75 @@ kbd {
   .controls-panel, .keybindings-info {
     display: none !important;
   }
+
+  /* Portrait Fullscreen: Game canvas remains at the top, Gamepad stays below it! Zero compenetration! */
+  body.is-fullscreen main {
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: flex-start !important;
+    align-items: center !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100vw !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    overflow: hidden !important;
+  }
+
+  body.is-fullscreen .screen-container,
+  body.is-fullscreen #screenWrapper {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: calc(100vw / 1.5) !important;
+    max-height: calc(100vw / 1.5) !important;
+    flex: 0 0 auto !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    background: #000 !important;
+    border-radius: 0 !important;
+    border: none !important;
+    border-bottom: 2px solid rgba(255, 255, 255, 0.12) !important;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.7) !important;
+  }
+
+  body.is-fullscreen #screenCanvas {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100vw !important;
+    max-height: calc(100vw / 1.5) !important;
+    aspect-ratio: 3 / 2 !important;
+    object-fit: contain !important;
+  }
+
+  body.is-fullscreen .touch-overlay {
+    position: fixed !important;
+    top: calc(100vw / 1.5) !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    height: auto !important;
+    max-height: calc(100dvh - (100vw / 1.5)) !important;
+    background: radial-gradient(circle at 50% 25%, #18181d 0%, #0c0c0e 100%) !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+    box-shadow: inset 0 8px 24px rgba(0, 0, 0, 0.6) !important;
+    display: block !important;
+    overflow: hidden !important;
+    padding-bottom: env(safe-area-inset-bottom, 12px) !important;
+  }
 }
 
 /* 2. Mobile Landscape Mode: Full Vertical Fit with Wings for Controls */
-@media (max-width: 860px) and (orientation: landscape) {
+@media (max-width: 860px) and (orientation: landscape), (orientation: landscape) {
   :root {
     --topbar-height: 40px;
     --header-height: 40px;
+  }
+
+  /* In orizzontale senza fullscreen, nascondi completamente i controlli touch per non disturbare la vista */
+  body:not(.is-fullscreen) .touch-overlay,
+  body:not(.is-fullscreen) #touchControlsOverlay {
+    display: none !important;
   }
 
   header.topbar-fixed, header {
@@ -2066,54 +2142,163 @@ body.is-fullscreen #screenCanvas {
   image-rendering: pixelated !important;
 }
 
-/* Floating Game HUD */
-#floatingGameHud {
-  display: none;
+/* Portrait Fullscreen Overrides: Canvas docked at top in 3:2 ratio, Virtual Gamepad dedicated below */
+@media (orientation: portrait) {
+  body.is-fullscreen main {
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: flex-start !important;
+    align-items: center !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100vw !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    overflow: hidden !important;
+  }
+
+  body.is-fullscreen .screen-container,
+  body.is-fullscreen #screenWrapper {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: calc(100vw / 1.5) !important;
+    max-height: calc(100vw / 1.5) !important;
+    flex: 0 0 auto !important;
+    display: flex !important;
+    align-items: flex-start !important;
+    justify-content: center !important;
+    background: #000 !important;
+    border-radius: 0 !important;
+    border: none !important;
+    border-bottom: 2px solid rgba(255, 255, 255, 0.12) !important;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.7) !important;
+  }
+
+  body.is-fullscreen #screenCanvas {
+    width: 100vw !important;
+    height: calc(100vw / 1.5) !important;
+    max-width: 100vw !important;
+    max-height: calc(100vw / 1.5) !important;
+    aspect-ratio: 3 / 2 !important;
+    object-fit: contain !important;
+  }
+
+  body.is-fullscreen .touch-overlay {
+    position: fixed !important;
+    top: calc(100vw / 1.5) !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    height: auto !important;
+    max-height: calc(100dvh - (100vw / 1.5)) !important;
+    background: radial-gradient(circle at 50% 25%, #18181d 0%, #0c0c0e 100%) !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+    box-shadow: inset 0 8px 24px rgba(0, 0, 0, 0.6) !important;
+    display: block !important;
+    overflow: hidden !important;
+    padding-bottom: env(safe-area-inset-bottom, 12px) !important;
+  }
 }
 
-body.is-fullscreen #floatingGameHud {
-  display: flex !important;
-  position: absolute;
-  top: 16px;
+@media (orientation: landscape) {
+  body:not(.is-fullscreen) .touch-overlay,
+  body:not(.is-fullscreen) #touchControlsOverlay {
+    display: none !important;
+  }
+}
+
+/* Fullscreen Menu Trigger Button (Small top-center button) */
+.fullscreen-menu-toggle {
+  display: none;
+  position: fixed;
+  top: 6px;
   left: 50%;
-  transform: translateX(-50%) translateY(-10px);
-  z-index: 1000;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.25s ease, transform 0.25s ease;
-  background: rgba(18, 18, 22, 0.88);
+  transform: translateX(-50%);
+  z-index: 1002;
+  background: rgba(18, 18, 24, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  border-radius: 20px;
+  padding: 4px 14px;
+  color: #e4e4e7;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.fullscreen-menu-toggle:hover,
+.fullscreen-menu-toggle:active {
+  background: rgba(79, 70, 229, 0.9);
+  color: #fff;
+  border-color: #818cf8;
+}
+
+body.is-fullscreen .fullscreen-menu-toggle {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Floating Game HUD: Hidden until toggled via top-center button */
+#floatingGameHud {
+  display: none !important;
+  position: fixed;
+  top: 36px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1003;
+  background: rgba(18, 18, 24, 0.94);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(99, 102, 241, 0.45);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8), 0 0 15px rgba(99, 102, 241, 0.2);
-  border-radius: 30px;
-  padding: 6px 14px;
-  gap: 10px;
+  border: 1px solid rgba(99, 102, 241, 0.55);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.85), 0 0 15px rgba(99, 102, 241, 0.25);
+  border-radius: 20px;
+  padding: 8px 14px;
+  gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
+  max-width: 95vw;
+  justify-content: center;
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
-body.is-fullscreen #screenWrapper:hover #floatingGameHud,
-body.is-fullscreen #floatingGameHud:hover,
-body.is-fullscreen #floatingGameHud.hud-active {
-  opacity: 1 !important;
-  pointer-events: auto !important;
-  transform: translateX(-50%) translateY(0) !important;
+body.is-fullscreen #floatingGameHud.hud-open {
+  display: flex !important;
 }
 
 .hud-btn {
   background: #27272a;
   border: 1px solid #4f46e5;
   color: #f4f4f5;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 6px 12px;
-  border-radius: 20px;
+  padding: 5px 10px;
+  border-radius: 16px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   transition: all 0.15s ease;
   white-space: nowrap;
+}
+
+.hud-btn:hover {
+  background: #4f46e5;
+  color: #fff;
+}
+
+.hud-btn.hud-btn-close {
+  background: #3f3f46;
+  border-color: #52525b;
+}
+
+.hud-btn.hud-btn-close:hover {
+  background: #ef4444;
+  border-color: #f87171;
 }
 
 .hud-btn:hover {
@@ -2158,7 +2343,14 @@ body.in-netplay #btnOpenNetplayModal {
 }
 
 body.touch-enabled #touchControlsOverlay {
-  display: block !important;
+  display: block;
+}
+
+@media (orientation: landscape) {
+  body:not(.is-fullscreen) #touchControlsOverlay,
+  body:not(.is-fullscreen) .touch-overlay {
+    display: none !important;
+  }
 }
 
 body.touch-enabled .btn-touch-edit {
