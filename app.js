@@ -1780,6 +1780,10 @@ function mainRafLoop(now) {
       if (fpsBadge) {
         fpsBadge.innerHTML = `<span class="indicator"></span> ${drawFps} FPS` + (simFps > drawFps + 4 ? ` <small>(emul. ${simFps}/s)</small>` : "");
       }
+      const canvasFpsText = document.getElementById("canvasFpsText");
+      if (canvasFpsText) {
+        canvasFpsText.innerText = `${drawFps} FPS` + (simFps > drawFps + 4 ? ` (${simFps}e)` : "");
+      }
       window.lastReportedFps = drawFps;
       window.lastReportedSps = simFps;
       frameCount = 0;
@@ -1807,6 +1811,18 @@ function setSpeed(speed) {
     speedBadge.innerText = "Velocita: 1x (60 FPS)";
     speedBadge.className = "badge";
     btnSpeedToggle.innerText = "[>>] Velocita: 1x";
+  }
+  const canvasSpeedText = document.getElementById("canvasSpeedText");
+  const btnCanvasSpeed = document.getElementById("btnCanvasSpeed");
+  if (canvasSpeedText) {
+    canvasSpeedText.innerText = roomSpeed === 2 ? "2x" : "1x";
+  }
+  if (btnCanvasSpeed) {
+    if (roomSpeed === 2) {
+      btnCanvasSpeed.classList.add("speed-active");
+    } else {
+      btnCanvasSpeed.classList.remove("speed-active");
+    }
   }
   netRescaleDelay(oldSpeed, roomSpeed === 2 ? 2 : 1);   // stesso ritardo in millisecondi
   audioApplyRatio();
@@ -4193,6 +4209,39 @@ if (btnCloseSettingsEl) {
 const btnHudSettingsEl = document.getElementById("btnHudSettings");
 if (btnHudSettingsEl) {
   btnHudSettingsEl.addEventListener("click", toggleSettingsDrawer);
+}
+
+// Canvas HUD Quick Controls (Speed 2x and Fullscreen)
+const btnCanvasSpeedEl = document.getElementById("btnCanvasSpeed");
+if (btnCanvasSpeedEl) {
+  btnCanvasSpeedEl.addEventListener("click", () => {
+    const nextSpeed = roomSpeed === 1 ? 2 : 1;
+    setSpeed(nextSpeed);
+    if (currentMode === "netplay" && activeP2PConn && activeP2PConn.open) {
+      try { activeP2PConn.send({ type: "change_speed", speed: nextSpeed }); } catch(err) {}
+    }
+  });
+}
+const btnCanvasFsEl = document.getElementById("btnCanvasFullscreen");
+if (btnCanvasFsEl) {
+  btnCanvasFsEl.addEventListener("click", toggleFullscreen);
+}
+
+// In-Canvas Stats HUD Settings Toggle & Persistence
+const chkStatsHud = document.getElementById("chkToggleStatsHud");
+const canvasStatsHud = document.getElementById("canvasStatsHud");
+if (chkStatsHud && canvasStatsHud) {
+  const savedStats = localStorage.getItem("rebit_show_hud_stats");
+  if (savedStats !== null) {
+    const show = savedStats === "true";
+    chkStatsHud.checked = show;
+    canvasStatsHud.style.display = show ? "flex" : "none";
+  }
+  chkStatsHud.addEventListener("change", (e) => {
+    const show = e.target.checked;
+    canvasStatsHud.style.display = show ? "flex" : "none";
+    localStorage.setItem("rebit_show_hud_stats", show ? "true" : "false");
+  });
 }
 
 // Initial UI state synchronization
