@@ -1319,6 +1319,7 @@ function netHostTryGo(force) {
 // Frame Timing and Animation Loop
 let frameCount = 0;              // passi di EMULAZIONE (a 2x sono 120/s)
 let renderCount = 0, lastRenderAt = 0;
+let renderDebtMs = 0;
 let lastFpsTime = performance.now();
 let lastAutoSavestateWallClock = Date.now();
 let totalFramesSimulated = 0;
@@ -1481,9 +1482,9 @@ function runSingleSimulationFrame() {
       localInputHistory.push({ frame: fr, keys: currentKeys });
     }
     if (targetFrame > netLastScheduled) netLastScheduled = targetFrame;
-    while (localInputHistory.length > 80) localInputHistory.shift();
+    while (localInputHistory.length > 140) localInputHistory.shift();
 
-    // Pacchetto con la storia degli ultimi 64 frame (a 2x serve piu' storia: i delay di due giocatori si sommano).
+    // Pacchetto con la storia degli ultimi 120 frame (copre fino a ~2s di jitter di rete senza desync)
     // A 2x se ne invia uno ogni 2 passi (sempre se si e' fermi in attesa): la storia copre il frame saltato, meta' pacchetti e CPU.
     if (netSpeed() === 1 || (totalFramesSimulated & 1) === 0 || netStalling) {
       const gbrb = packGbrbInput(myPlayerId, netLastScheduled, localInputHistory);
@@ -1579,9 +1580,9 @@ function runSingleSimulationFrame() {
       window.Module._mgba_demo_set_keys(c, keys);
     }
 
-    delete localInputByFrame[totalFramesSimulated - 60];
+    delete localInputByFrame[totalFramesSimulated - 120];
     for (let p = 1; p <= 4; p++) {
-      if (remotePlayerInputs[p]) delete remotePlayerInputs[p][totalFramesSimulated - 60];
+      if (remotePlayerInputs[p]) delete remotePlayerInputs[p][totalFramesSimulated - 120];
     }
   } else if (currentMode === "dual") {
     window.Module._mgba_demo_set_keys(0, currentKeys);
@@ -1735,10 +1736,12 @@ function renderCanvasOnly() {
 function mainRafLoop(now) {
   requestAnimationFrame(mainRafLoop);
   if (!now) now = performance.now();
+  const dtRaf = lastRafTime > 0 ? Math.min(Math.max(now - lastRafTime, 0), 100) : GBA_FRAME_MS;
   lastRafTime = now;
 
   if (isBackgroundPaused && pauseOnBackground) {
     lastPumpTime = now;
+    renderDebtMs = 0;
     return;
   }
 
@@ -1747,15 +1750,19 @@ function mainRafLoop(now) {
     const steps = pumpEmulation(now);
     perf.raf(now, performance.now() - pumpT0);
 
-    // Rendering deterministico legato ai frame video GBA:
-    // Risoluzione bug 45 FPS su display 90Hz e timing stabile a 60 FPS su qualsiasi monitor (60Hz, 75Hz, 90Hz, 120Hz, 144Hz+)
+    // Accumulatore di rendering temporale deterministico:
+    // Risolve definitivamente il bug dei 42-48 FPS su display a 90Hz (e 60/75/120/144Hz+)
+    // A 1x: renderizza a ogni nuovo frame GBA (~59.73 FPS).
+    // A 2x: accumulatore temporale rilascia esattamente 60 FPS senza campionare la parità discreta.
+    renderDebtMs = Math.min(renderDebtMs + dtRaf, 100);
     if (steps > 0) {
-      // Quando steps > 0 un nuovo frame video GBA è stato prodotto dal core mGBA.
-      // A velocità 1x (roomSpeed !== 2), disegna sempre il frame generato (~59.73 FPS).
-      // A velocità 2x (roomSpeed === 2, 120 FPS emulati), disegna quando totalFramesSimulated % 2 === 0
-      // per produrre esattamente 60 FPS disegnati su schermo senza sprechi né aliasing.
-      const shouldDraw = (roomSpeed !== 2) || (totalFramesSimulated % 2 === 0);
+      const shouldDraw = (roomSpeed !== 2) || (renderDebtMs >= GBA_FRAME_MS - 2.5);
       if (shouldDraw) {
+        if (roomSpeed === 2) {
+          renderDebtMs = Math.max(0, renderDebtMs - GBA_FRAME_MS);
+        } else {
+          renderDebtMs = 0;
+        }
         const r0 = performance.now();
         renderCanvasOnly();
         perf.render(performance.now() - r0);
@@ -2010,7 +2017,7 @@ function packGbrbInput(origin, frame, recentInputs) {
   const sampleList = recentInputs && recentInputs.length > 0
     ? recentInputs
     : [{ frame: frame, keys: currentKeys }];
-  const sampleCount = Math.min(sampleList.length, 64);
+  const sampleCount = Math.min(sampleList.length, 120);
   const totalSize = 40 + sampleCount * 8;
   const buf = new ArrayBuffer(totalSize);
   const view = new DataView(buf);
