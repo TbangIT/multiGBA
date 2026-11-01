@@ -115,7 +115,7 @@ const perf = (() => {
   function report() {
     const last = hist[hist.length - 1] || null;
     return {
-      app: "rebit-gba", when: new Date().toISOString(), mode: currentMode, players: netplayPlayerCount, me: myPlayerId, speed: netSpeed(),
+      app: "multigba", when: new Date().toISOString(), mode: currentMode, players: netplayPlayerCount, me: myPlayerId, speed: netSpeed(),
       transport: activeP2PConn ? (activeP2PConn.type === "mqtt" ? "mqtt" : "webrtc") : (myPlayerId === 1 ? "host" : "-"), lagMode: netLagMode,
       browser: { ua: navigator.userAgent, cores: navigator.hardwareConcurrency || null, memGB: navigator.deviceMemory || null },
       verdict: last && last.verdict, last, history: hist.slice(-12),
