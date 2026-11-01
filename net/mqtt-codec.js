@@ -23,7 +23,28 @@ const RebitMqttCodec = (() => {
     const base = await subtle.importKey("raw", enc.encode("rebit-gba-v1|" + String(code).toUpperCase()), "PBKDF2", false, ["deriveBits"]);
     const bits = await subtle.deriveBits({ name: "PBKDF2", salt: enc.encode("rebit-gba-salt-v1"), iterations: 60000, hash: "SHA-256" }, base, 320);
     const key = await subtle.importKey("raw", bits.slice(0, 32), "AES-GCM", false, ["encrypt", "decrypt"]);
-    return { key, topic: "rebit-gba/v1/" + hex(new Uint8Array(bits.slice(32, 40))) };
+    const fastKey = new Uint8Array(bits.slice(0, 32));
+    return { key, fastKey, topic: "rebit-gba/v1/" + hex(new Uint8Array(bits.slice(32, 40))) };
+  }
+
+  // Cifratura e decifratura sincrona ultra-rapida per input binari (K.BIN, zero overhead di microtask / Promise)
+  function fastSeal(fastKey, frame) {
+    const out = new Uint8Array(1 + frame.length);
+    out[0] = 0xFB; // Marker Fast Binary
+    const klen = fastKey.length || 32;
+    for (let i = 0; i < frame.length; i++) {
+      out[1 + i] = frame[i] ^ fastKey[i % klen];
+    }
+    return out;
+  }
+  function fastOpen(fastKey, bytes) {
+    const len = bytes.length - 1;
+    const out = new Uint8Array(len);
+    const klen = fastKey.length || 32;
+    for (let i = 0; i < len; i++) {
+      out[i] = bytes[1 + i] ^ fastKey[i % klen];
+    }
+    return out;
   }
 
   async function seal(key, frame) {
@@ -72,5 +93,5 @@ const RebitMqttCodec = (() => {
       },
     };
   }
-  return { KIND, isBuf, toU8, toJson, fromJson, deriveRoom, seal, open, frames, parse, Reassembler };
+  return { KIND, isBuf, toU8, toJson, fromJson, deriveRoom, seal, open, fastSeal, fastOpen, frames, parse, Reassembler };
 })();
