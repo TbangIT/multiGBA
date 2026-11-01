@@ -1,14 +1,15 @@
 // Relay MQTT: riserva quando WebRTC non riesce (NAT simmetrici, hotspot mobili, firewall). Solo connessioni in uscita.
 // Espone una "connessione" con la STESSA interfaccia di PeerJS (on/send/close/open): il resto dell'app non cambia.
 //
-//   Topic (B = rebit-gba/v1/<hash del codice stanza>):  B/h = casella dell'host,  B/g/<id> = casella di un guest,  B/b = avvisi dell'host,
+//   Topic (B = multigba/v1/<hash del codice stanza>):  B/h = casella dell'host,  B/g/<id> = casella di un guest,  B/b = avvisi dell'host,
 //   B/in = INPUT di tutti: ognuno pubblica una volta, il broker li distribuisce (l'host non rilancia: con 4 giocatori erano ~9 invii cifrati/frame)
 //   Handshake: il guest si collega A TUTTI i broker e ripete JOIN ogni secondo; l'host risponde WELCOME sul broker che ha scelto
 //   (il piu' veloce, misurato). Il primo WELCOME decide il broker della stanza. Non servono messaggi "retained".
 //   Failover: se il broker cade, tutti passano al successivo nell'ORDINE FISSO dell'elenco; gli input persi si recuperano
 //   da soli (ogni pacchetto porta gli ultimi 32 frame).
-const RebitMqtt = (() => {
-  const C = RebitMqttCodec, K = C.KIND, B = RebitMqttBrokers;
+const MultiGbaMqtt = (() => {
+  const C = window.MultiGbaMqttCodec || window.RebitMqttCodec || (typeof RebitMqttCodec !== "undefined" ? RebitMqttCodec : null);
+  const K = C.KIND, B = window.MultiGbaMqttBrokers || window.RebitMqttBrokers || (typeof RebitMqttBrokers !== "undefined" ? RebitMqttBrokers : null);
   const KEEP_MS = 2000, DEAD_MS = 10000, FAILOVER_MS = 4000, JOIN_EVERY_MS = 1000;
   const EMPTY = new Uint8Array(0);
   let hostCtl = null, guestCtl = null;
@@ -248,4 +249,5 @@ const RebitMqtt = (() => {
   function closeAll() { hostStop(); guestStop(); }
   return { available, hostStart, hostStop, guestJoin, guestStop, closeAll, MqttConn };
 })();
-window.RebitMqtt = RebitMqtt;
+window.MultiGbaMqtt = MultiGbaMqtt;
+window.RebitMqtt = MultiGbaMqtt;
