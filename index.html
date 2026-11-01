@@ -99,15 +99,23 @@
         </button>
       </div>
 
-      <!-- Floating Game HUD (A comparsa in Fullscreen su hover o tocco) -->
+      <!-- Small Top-Center Fullscreen Menu Trigger Pill -->
+      <button id="btnFullscreenMenuToggle" class="fullscreen-menu-toggle" style="display: none;" title="Menu Schermo Intero">
+        <span class="fs-menu-pill">▼ multiGBA</span>
+      </button>
+
+      <!-- Floating Game HUD (A comparsa in Fullscreen cliccando il tasto in alto) -->
       <div id="floatingGameHud" class="floating-game-hud" style="display: none;">
         <button id="btnHudFullscreenExit" class="hud-btn" title="Esci da Schermo Intero">[⛶ Esci Fullscreen]</button>
         <button id="btnExitFullscreenHud" class="hud-btn" style="display: none;" aria-hidden="true">[⛶ Esci Fullscreen]</button>
+        <button id="btnHudTouchEdit" class="hud-btn" title="Modifica posizione e dimensione tasti touch">[✏ Modifica Touch]</button>
+        <button id="btnHudTouchReset" class="hud-btn" title="Ripristina layout predefinito per questo orientamento">[↺ Reset Touch]</button>
         <label class="toggle-control hud-toggle" id="lblHudTouchToggle" title="Attiva/Disattiva Controlli Touch">
           <input type="checkbox" id="chkHudTouchToggle">
           <span>[📱 Touch]</span>
         </label>
         <button id="btnHudSettings" class="hud-btn" title="Apri Impostazioni">[⚙ Impostazioni]</button>
+        <button id="btnHudCloseMenu" class="hud-btn hud-btn-close" title="Chiudi menu">[✕ Chiudi]</button>
       </div>
 
       <!-- In-Game floating notification banner with dismiss button -->
@@ -648,13 +656,34 @@
         }
       }
 
+      const btnFullscreenMenuToggle = document.getElementById("btnFullscreenMenuToggle");
+      const btnHudTouchEdit = document.getElementById("btnHudTouchEdit");
+      const btnHudTouchReset = document.getElementById("btnHudTouchReset");
+      const btnHudCloseMenu = document.getElementById("btnHudCloseMenu");
+
       function updateFullscreenState() {
-        const isFs = !!document.fullscreenElement;
+        const isFs = !!document.fullscreenElement || document.body.classList.contains("is-fullscreen");
         document.body.classList.toggle("is-fullscreen", isFs);
         if (btnFullscreenToggle) {
           btnFullscreenToggle.innerHTML = isFs ? '[⛶ Esci Fullscreen]' : '[⛶ Tutto Schermo]';
         }
+        if (btnFullscreenMenuToggle) {
+          btnFullscreenMenuToggle.style.display = isFs ? "inline-flex" : "none";
+        }
+        if (!isFs && floatingHud) {
+          floatingHud.style.display = "none";
+          floatingHud.classList.remove("hud-open", "hud-active");
+        }
+        if (typeof window.updateTouchControlsVisibility === "function") {
+          window.updateTouchControlsVisibility();
+        }
       }
+
+      // Observer on body class to catch programmatic classList changes
+      const fsObserver = new MutationObserver(function() {
+        updateFullscreenState();
+      });
+      fsObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] });
 
       document.addEventListener("fullscreenchange", updateFullscreenState);
       document.addEventListener("webkitfullscreenchange", updateFullscreenState);
@@ -663,6 +692,48 @@
 
       if (btnFullscreenToggle) {
         btnFullscreenToggle.addEventListener("click", toggleFullscreen);
+      }
+      if (btnFullscreenMenuToggle) {
+        btnFullscreenMenuToggle.addEventListener("click", function(e) {
+          e.stopPropagation();
+          if (!floatingHud) return;
+          const isOpen = floatingHud.classList.contains("hud-open") || floatingHud.style.display === "flex";
+          if (isOpen) {
+            floatingHud.style.display = "none";
+            floatingHud.classList.remove("hud-open", "hud-active");
+          } else {
+            floatingHud.style.display = "flex";
+            floatingHud.classList.add("hud-open");
+          }
+        });
+      }
+      if (btnHudCloseMenu && floatingHud) {
+        btnHudCloseMenu.addEventListener("click", function() {
+          floatingHud.style.display = "none";
+          floatingHud.classList.remove("hud-open", "hud-active");
+        });
+      }
+      if (btnHudTouchEdit) {
+        btnHudTouchEdit.addEventListener("click", function() {
+          if (floatingHud) {
+            floatingHud.style.display = "none";
+            floatingHud.classList.remove("hud-open", "hud-active");
+          }
+          if (typeof window.startTouchEdit === "function") {
+            window.startTouchEdit();
+          }
+        });
+      }
+      if (btnHudTouchReset) {
+        btnHudTouchReset.addEventListener("click", function() {
+          if (floatingHud) {
+            floatingHud.style.display = "none";
+            floatingHud.classList.remove("hud-open", "hud-active");
+          }
+          if (typeof window.resetTouchLayout === "function") {
+            window.resetTouchLayout();
+          }
+        });
       }
       if (btnHudFullscreenExit) {
         btnHudFullscreenExit.addEventListener("click", function() {
@@ -741,20 +812,6 @@
             document.body.classList.toggle("touch-enabled", e.target.checked);
           }
         });
-      }
-
-      // Touch-reveal HUD on mobile in fullscreen
-      let hudTimer = null;
-      if (screenWrapper && floatingHud) {
-        screenWrapper.addEventListener("touchstart", function(e) {
-          if (!document.body.classList.contains("is-fullscreen")) return;
-          if (e.target.closest("#floatingGameHud") || e.target.closest(".touch-widget")) return;
-          floatingHud.classList.add("hud-active");
-          if (hudTimer) clearTimeout(hudTimer);
-          hudTimer = setTimeout(function() {
-            floatingHud.classList.remove("hud-active");
-          }, 3500);
-        }, { passive: true });
       }
     })();
   </script>
